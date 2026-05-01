@@ -15,7 +15,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientSdk } from '@quadcode-tech/client-sdk-js';
-import { ArrowLeft, Wallet, Play, Square, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Wallet, Play, Square, ChevronDown, Sparkles } from 'lucide-react';
 
 import { theme as T } from '../lib/theme';
 import { Chart, type ChartMarker } from '../components/Chart';
@@ -219,13 +219,10 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
           />
         </div>
 
-        <BalancePill
-          balance={selectedBalance}
-          onToggle={() => {
-            if (!selectedBalance) return;
-            selectKind(selectedBalance.kind === 'real' ? 'demo' : 'real');
-          }}
-          hasBoth={balances.some(b => b.kind === 'real') && balances.some(b => b.kind === 'demo')}
+        <BalanceToggle
+          balances={balances}
+          selected={selectedBalance}
+          onSelect={selectKind}
         />
       </header>
 
@@ -240,6 +237,10 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
               lastCandle={lastCandle}
               markers={markers}
               loading={chartLoading}
+              ticker={activeInfo?.ticker}
+              assetName={activeInfo ? `BLITZ · ${activeInfo.incomePercent}% retorno` : undefined}
+              balance={selectedBalance?.amount}
+              balanceKind={selectedBalance?.kind}
             />
             <ScannerOverlay active={isRunning && !activeOperation} />
           </div>
@@ -250,6 +251,72 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
         {/* Coluna do meio: controles do bot */}
         <div style={controlsColStyle}>
           <div style={panelTitleStyle}>CONTROLE DO BOT</div>
+
+          {/* Bloco de recomendação da IA */}
+          {balanceAmount > 0 && (
+            <div style={aiRecommendStyle}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 10,
+              }}>
+                <Sparkles size={14} color={T.accent} />
+                <span style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: '0.12em',
+                  color: T.accent,
+                }}>
+                  RECOMENDAÇÃO DA IA
+                </span>
+              </div>
+              <div style={{
+                fontSize: 13,
+                color: T.text,
+                lineHeight: 1.5,
+                marginBottom: 10,
+              }}>
+                Com base na sua banca de <strong style={{
+                  fontFamily: 'JetBrains Mono, monospace',
+                  color: T.accent,
+                }}>${balanceAmount.toFixed(2)}</strong>, o perfil ideal é{' '}
+                <strong style={{ color: T.accent }}>
+                  {suggested.profile[0].toUpperCase() + suggested.profile.slice(1)}
+                </strong>.
+              </div>
+              <div style={{
+                fontSize: 11,
+                color: T.textDim,
+                lineHeight: 1.5,
+                marginBottom: 12,
+              }}>
+                {suggested.reasoning}
+              </div>
+              {profile !== suggested.profile && (
+                <button
+                  onClick={() => onProfileChange(suggested.profile)}
+                  style={applyRecommendButtonStyle}
+                >
+                  <Sparkles size={12} />
+                  Aplicar sugestão da IA
+                </button>
+              )}
+              {profile === suggested.profile && (
+                <div style={{
+                  fontSize: 10,
+                  color: T.long,
+                  letterSpacing: '0.06em',
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}>
+                  ✓ Perfil recomendado em uso
+                </div>
+              )}
+            </div>
+          )}
 
           <StopLossCard
             stopLoss={stopLossAmount}
@@ -534,48 +601,111 @@ function AssetSelector({
   );
 }
 
-function BalancePill({
-  balance, onToggle, hasBoth,
+function BalanceToggle({
+  balances, selected, onSelect,
 }: {
-  balance: ReturnType<typeof useBalances>['selected'];
-  onToggle: () => void;
-  hasBoth: boolean;
+  balances: ReturnType<typeof useBalances>['balances'];
+  selected: ReturnType<typeof useBalances>['selected'];
+  onSelect: (kind: 'real' | 'demo') => void;
 }) {
-  if (!balance) return null;
+  if (!selected) return null;
+
+  const real = balances.find(b => b.kind === 'real');
+  const demo = balances.find(b => b.kind === 'demo');
 
   return (
-    <button
-      onClick={onToggle}
-      disabled={!hasBoth}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '8px 14px',
-        background: T.bgElev,
-        border: `1px solid ${T.border}`,
-        borderRadius: 10,
-        cursor: hasBoth ? 'pointer' : 'default',
-        fontFamily: 'inherit',
-      }}
-    >
-      <Wallet size={14} color={T.textDim} />
-      <div style={{ textAlign: 'left' }}>
-        <div style={{ fontSize: 9, color: T.textMute, letterSpacing: '0.1em' }}>
-          {balance.kind.toUpperCase()}
-        </div>
-        <div style={{
-          fontSize: 14,
-          fontWeight: 700,
-          color: T.text,
-          fontFamily: 'JetBrains Mono, monospace',
-        }}>
-          ${balance.amount.toFixed(2)}
-        </div>
-      </div>
-    </button>
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 4,
+      padding: 4,
+      background: T.bgElev,
+      border: `1px solid ${T.border}`,
+      borderRadius: 12,
+    }}>
+      {real && (
+        <button
+          onClick={() => onSelect('real')}
+          style={{
+            ...segmentStyle,
+            ...(selected.kind === 'real' ? segmentActiveStyle : null),
+          }}
+        >
+          <Wallet size={12} />
+          <div style={{ textAlign: 'left' }}>
+            <div style={{
+              fontSize: 9,
+              letterSpacing: '0.1em',
+              color: selected.kind === 'real' ? T.bg : T.textMute,
+              fontWeight: 700,
+              opacity: selected.kind === 'real' ? 0.7 : 1,
+            }}>
+              REAL
+            </div>
+            <div style={{
+              fontSize: 13,
+              fontWeight: 700,
+              fontFamily: 'JetBrains Mono, monospace',
+              color: selected.kind === 'real' ? T.bg : T.text,
+            }}>
+              ${real.amount.toFixed(2)}
+            </div>
+          </div>
+        </button>
+      )}
+      {demo && (
+        <button
+          onClick={() => onSelect('demo')}
+          style={{
+            ...segmentStyle,
+            ...(selected.kind === 'demo' ? segmentActiveStyle : null),
+          }}
+        >
+          <Wallet size={12} />
+          <div style={{ textAlign: 'left' }}>
+            <div style={{
+              fontSize: 9,
+              letterSpacing: '0.1em',
+              color: selected.kind === 'demo' ? T.bg : T.textMute,
+              fontWeight: 700,
+              opacity: selected.kind === 'demo' ? 0.7 : 1,
+            }}>
+              DEMO
+            </div>
+            <div style={{
+              fontSize: 13,
+              fontWeight: 700,
+              fontFamily: 'JetBrains Mono, monospace',
+              color: selected.kind === 'demo' ? T.bg : T.text,
+            }}>
+              ${demo.amount.toFixed(2)}
+            </div>
+          </div>
+        </button>
+      )}
+    </div>
   );
 }
+
+const segmentStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 12px',
+  background: 'transparent',
+  border: 'none',
+  borderRadius: 8,
+  cursor: 'pointer',
+  color: T.textDim,
+  fontFamily: 'inherit',
+  transition: 'all 120ms',
+};
+
+const segmentActiveStyle = {
+  background: T.accent,
+  color: T.bg,
+  boxShadow: `0 0 12px ${T.accentDim}`,
+};
 
 function NumberField({
   label, value, unit, onChange, step, min, decimals,
@@ -821,6 +951,31 @@ const hintStyle = {
   color: T.accent,
   marginTop: 4,
   opacity: 0.85,
+};
+
+const aiRecommendStyle = {
+  background: `linear-gradient(135deg, ${T.accentSoft}, ${T.accent}08)`,
+  border: `1px solid ${T.accent}44`,
+  borderRadius: 12,
+  padding: 14,
+  marginBottom: 4,
+};
+
+const applyRecommendButtonStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '8px 14px',
+  background: T.accent,
+  border: 'none',
+  color: T.bg,
+  borderRadius: 8,
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: '0.04em',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  boxShadow: `0 0 12px ${T.accentDim}`,
 };
 
 const primaryButtonStyle = {
