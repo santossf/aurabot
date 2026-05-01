@@ -1,7 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ClientSdk } from '@quadcode-tech/client-sdk-js';
-import { auth } from '../lib/api';
-import { createSdkWithAccessToken } from '../lib/avalonClient';
+import {
+  createSdkWithAccessToken,
+  loadStoredTokens,
+  clearStoredTokens,
+  type IssuedTokens,
+} from '../lib/avalonClient';
 
 type User = { id: string; email?: string; name?: string };
 
@@ -13,7 +17,7 @@ type AuthState =
 type AuthCtx = {
   state: AuthState;
   /** Chamado pela CallbackPage após troca bem-sucedida do code. */
-  onTokenIssued: (accessToken: string, expiresAt: number) => Promise<void>;
+  onTokenIssued: (tokens: IssuedTokens) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -21,100 +25,80 @@ const Ctx = createContext<AuthCtx | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' });
-
-  // accessToken vive em memória — NUNCA em localStorage
-  const tokenRef = useRef<{ value: string; expiresAt: number } | null>(null);
-  const refreshTimerRef = useRef<number | null>(null);
   const sdkRef = useRef<ClientSdk | null>(null);
-
-  /** Agenda refresh do token antes de expirar (60s de folga). */
-  const scheduleRefresh = useCallback((expiresAt: number) => {
-    if (refreshTimerRef.current) {
-      window.clearTimeout(refreshTimerRef.current);
-    }
-    const ms = Math.max(0, expiresAt - Date.now() - 60_000);
-    refreshTimerRef.current = window.setTimeout(async () => {
-      try {
-        const { accessToken, expiresAt: newExpiresAt } = await auth.refresh();
-        tokenRef.current = { value: accessToken, expiresAt: newExpiresAt };
-        // SDK precisa ser re-instanciado com o novo token
-        sdkRef.current = await createSdkWithAccessToken(accessToken);
-        setState(s => s.status === 'authenticated' ? { ...s, sdk: sdkRef.current! } : s);
-        scheduleRefresh(newExpiresAt);
-      } catch (err) {
-        console.error('[auth] refresh falhou:', err);
-        await doLogout();
-      }
-    }, ms);
-  }, []);
+  const expiryTimerRef = useRef<number | null>(null);
 
   const doLogout = useCallback(async () => {
-    try { await auth.logout(); } catch { /* ignore */ }
-    if (refreshTimerRef.current) {
-      window.clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
+    if (expiryTimerRef.current) {
+      window.clearTimeout(expiryTimerRef.current);
+      expiryTimerRef.current = null;
     }
-    tokenRef.current = null;
+    clearStoredTokens();
     sdkRef.current = null;
     setState({ status: 'guest' });
   }, []);
 
   /**
-   * Após /auth/exchange devolver { accessToken, expiresAt },
-   * a CallbackPage chama isto para criar o SDK e marcar autenticado.
+   * Agenda logout automático quando o accessToken expirar.
+   * Como estamos no fluxo Online sem refresh, ao expirar o usuário
+   * é deslogado e precisa relogar.
    */
-  const onTokenIssued = useCallback(async (accessToken: string, expiresAt: number) => {
-    tokenRef.current = { value: accessToken, expiresAt };
-    const sdk = await createSdkWithAccessToken(accessToken);
-    sdkRef.current = sdk;
-
-    const me = await auth.me();
-    if (!me.authenticated || !me.user) {
-      await doLogout();
-      return;
+  const scheduleExpiry = useCallback((tokens: IssuedTokens) => {
+    if (expiryTimerRef.current) {
+      window.clearTimeout(expiryTimerRef.current);
     }
-
-    setState({ status: 'authenticated', user: me.user, sdk });
-    scheduleRefresh(expiresAt);
-  }, [doLogout, scheduleRefresh]);
+    const expiresAtMs = tokens.obtainedAt + tokens.expiresIn * 1000;
+    const ms = Math.max(0, expiresAtMs - Date.now());
+    expiryTimerRef.current = window.setTimeout(() => {
+      console.log('[auth] accessToken expirou, deslogando');
+      doLogout();
+    }, ms);
+  }, [doLogout]);
 
   /**
-   * Boot: se houver sessão (cookie), tenta refresh para conseguir
-   * um accessToken e re-instanciar o SDK. Caso contrário, vira guest.
+   * Após CallbackPage trocar code por tokens, chama isto para criar o SDK.
+   */
+  const onTokenIssued = useCallback(async (tokens: IssuedTokens) => {
+    try {
+      const sdk = await createSdkWithAccessToken(tokens.accessToken);
+      sdkRef.current = sdk;
+
+      // Tenta puxar dados do usuário via SDK (userProfile fica disponível após connect)
+      const user: User = {
+        id:   String((sdk as any).userProfile?.userId ?? 'unknown'),
+        name: [(sdk as any).userProfile?.firstName, (sdk as any).userProfile?.lastName]
+                .filter(Boolean).join(' ') || undefined,
+      };
+
+      setState({ status: 'authenticated', user, sdk });
+      scheduleExpiry(tokens);
+    } catch (err) {
+      console.error('[auth] falha ao criar SDK:', err);
+      await doLogout();
+      throw err;
+    }
+  }, [doLogout, scheduleExpiry]);
+
+  /**
+   * Boot: tenta recuperar tokens do sessionStorage (sobrevive a F5).
    */
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const tokens = loadStoredTokens();
+      if (!tokens) {
+        if (!cancelled) setState({ status: 'guest' });
+        return;
+      }
       try {
-        const me = await auth.me();
-        if (cancelled) return;
-
-        if (!me.authenticated) {
-          setState({ status: 'guest' });
-          return;
-        }
-
-        // Há sessão — pega novo accessToken via refresh
-        const { accessToken, expiresAt } = await auth.refresh();
-        if (cancelled) return;
-
-        tokenRef.current = { value: accessToken, expiresAt };
-        const sdk = await createSdkWithAccessToken(accessToken);
-        sdkRef.current = sdk;
-
-        setState({
-          status: 'authenticated',
-          user: me.user!,
-          sdk,
-        });
-        scheduleRefresh(expiresAt);
+        await onTokenIssued(tokens);
       } catch {
         if (!cancelled) setState({ status: 'guest' });
       }
     })();
-
     return () => { cancelled = true; };
-  }, [scheduleRefresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <Ctx.Provider value={{ state, onTokenIssued, logout: doLogout }}>
@@ -133,7 +117,7 @@ export function useAuth() {
 export function useSdk(): ClientSdk {
   const { state } = useAuth();
   if (state.status !== 'authenticated') {
-    throw new Error('useSdk: usuário não autenticado. Renderize só dentro de rota protegida.');
+    throw new Error('useSdk: usuário não autenticado.');
   }
   return state.sdk;
 }
