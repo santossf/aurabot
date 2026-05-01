@@ -1,114 +1,121 @@
 /**
  * ============================================================================
- * AVALON / QUADCODE SDK — wrapper server-side
+ * AVALON / QUADCODE — wrapper server-side
  * ----------------------------------------------------------------------------
- * O backend serve a 2 propósitos no fluxo "offline_access":
+ * IMPORTANTE: o SDK não expõe a resposta detalhada da Avalon quando dá erro
+ * (só joga "400" e abafa o body). Para conseguir diagnóstico, fazemos a
+ * chamada HTTP DIRETAMENTE para o endpoint /oauth2/token, replicando o que
+ * o SDK faz internamente.
  *
- *   1. Trocar o `code` (vindo do callback do frontend) por accessToken,
- *      e GUARDAR o refreshToken no servidor.
- *   2. Renovar o accessToken sob demanda, sem expor o refreshToken ao browser.
- *
- * O SDK propriamente dito (ClientSdk) roda no FRONTEND, autenticado via
- * accessToken que esta API devolve.
+ * Depois que o login estiver funcionando, podemos voltar a usar o SDK.
  * ============================================================================
  */
-import { OAuthMethod } from '@quadcode-tech/client-sdk-js';
 import { env } from '../config/env.js';
-
-/**
- * Storage de tokens que o SDK injeta. Como cada chamada é por usuário,
- * criamos um storage isolado por chamada e capturamos os tokens via callback.
- *
- * O SDK chama `set()` quando recebe novos tokens da Avalon.
- */
-class CapturingTokensStorage {
-  private tokens: { accessToken: string; refreshToken?: string } = { accessToken: '' };
-
-  get() {
-    return this.tokens;
-  }
-
-  set(tokens: { accessToken: string; refreshToken?: string }) {
-    this.tokens = tokens;
-  }
-}
-
-/**
- * Constrói uma instância de OAuthMethod configurada com client_secret
- * (server-side only, NUNCA exposto ao browser).
- *
- * Atenção ao construtor posicional do SDK — segue a ordem documentada:
- *   apiBaseUrl, clientId, redirectUri, scope, clientSecret,
- *   accessToken, refreshToken, _, _, _, tokensStorage
- */
-function buildOAuth(opts: {
-  accessToken?: string;
-  refreshToken?: string;
-  storage: CapturingTokensStorage;
-}) {
-  return new OAuthMethod(
-    env.AVALON_OAUTH_API_BASE_URL,    // 1. apiBaseUrl
-    env.AVALON_CLIENT_ID as any,      // 2. clientId (SDK aceita number; valor vem como string do .env)
-    env.AVALON_REDIRECT_URI,          // 3. redirectUri
-    env.AVALON_SCOPE,                 // 4. scope
-    env.AVALON_CLIENT_SECRET,         // 5. clientSecret (server-side only)
-    opts.accessToken,                 // 6. accessToken
-    opts.refreshToken,                // 7. refreshToken
-    undefined,                        // 8.
-    undefined,                        // 9.
-    undefined,                        // 10.
-    opts.storage as any,              // 11. tokensStorage
-  );
-}
-
+ 
 export interface ExchangeResult {
   accessToken: string;
   refreshToken?: string;
   expiresIn: number;
 }
-
+ 
 /**
  * Troca o `code` recebido no callback por accessToken + refreshToken.
- * Chamado no endpoint /auth/exchange logo após o redirect.
+ * Implementação manual via fetch, para conseguir log detalhado de erros.
  */
 export async function exchangeAuthCode(
   code: string,
   codeVerifier: string,
 ): Promise<ExchangeResult> {
-  const storage = new CapturingTokensStorage();
-  const oauth = buildOAuth({ storage });
-
-  const result = await oauth.issueAccessTokenWithAuthCode(code, codeVerifier);
-
+  const tokenUrl = `${env.AVALON_OAUTH_API_BASE_URL}/oauth2/token`;
+ 
+  const body = new URLSearchParams({
+    grant_type:    'authorization_code',
+    client_id:     env.AVALON_CLIENT_ID,
+    client_secret: env.AVALON_CLIENT_SECRET,
+    code:          code,
+    code_verifier: codeVerifier,
+    redirect_uri:  env.AVALON_REDIRECT_URI,
+    scope:         env.AVALON_SCOPE,
+  });
+ 
+  console.log('[avalon/exchange] POST', tokenUrl);
+  console.log('[avalon/exchange] params:', {
+    grant_type:    'authorization_code',
+    client_id:     env.AVALON_CLIENT_ID,
+    redirect_uri:  env.AVALON_REDIRECT_URI,
+    scope:         env.AVALON_SCOPE,
+    code_length:   code.length,
+    verifier_length: codeVerifier.length,
+    // client_secret e code/verifier não logamos por segurança
+  });
+ 
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+ 
+  const text = await response.text();
+ 
+  if (!response.ok) {
+    console.error('[avalon/exchange] FALHOU - status:', response.status);
+    console.error('[avalon/exchange] resposta da Avalon:', text);
+    throw new Error(`Avalon recusou: ${response.status} ${text}`);
+  }
+ 
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.error('[avalon/exchange] resposta não-JSON:', text);
+    throw new Error('Resposta inválida da Avalon');
+  }
+ 
+  console.log('[avalon/exchange] SUCESSO - expiresIn:', data.expires_in);
+ 
   return {
-    accessToken: result.accessToken,
-    refreshToken: result.refreshToken,
-    expiresIn: result.expiresIn,
+    accessToken:  data.access_token,
+    refreshToken: data.refresh_token,
+    expiresIn:    data.expires_in,
   };
 }
-
+ 
 /**
- * Renova o accessToken usando refreshToken armazenado no servidor.
- * O SDK lê o refreshToken do storage e chama o endpoint de refresh internamente.
+ * Renova o accessToken usando refreshToken.
  */
 export async function refreshAccessToken(
   refreshToken: string,
 ): Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }> {
-  const storage = new CapturingTokensStorage();
-  storage.set({ accessToken: '', refreshToken });
-
-  const oauth = buildOAuth({ refreshToken, storage });
-  const result = await oauth.refreshAccessToken();
-
-  // Após refresh, o storage pode ter um novo refreshToken (rotation)
-  const updated = storage.get();
+  const tokenUrl = `${env.AVALON_OAUTH_API_BASE_URL}/oauth2/token`;
+ 
+  const body = new URLSearchParams({
+    grant_type:    'refresh_token',
+    client_id:     env.AVALON_CLIENT_ID,
+    client_secret: env.AVALON_CLIENT_SECRET,
+    refresh_token: refreshToken,
+  });
+ 
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+ 
+  const text = await response.text();
+ 
+  if (!response.ok) {
+    console.error('[avalon/refresh] FALHOU:', response.status, text);
+    throw new Error(`Refresh falhou: ${response.status} ${text}`);
+  }
+ 
+  const data = JSON.parse(text);
   return {
-    accessToken: result.accessToken,
-    expiresIn: result.expiresIn,
-    refreshToken: updated.refreshToken ?? refreshToken,
+    accessToken:  data.access_token,
+    expiresIn:    data.expires_in,
+    refreshToken: data.refresh_token,
   };
 }
-
+ 
 /** Helper: epoch ms até o token expirar (com folga de segurança). */
 export function computeExpiresAt(expiresIn: number, safetyMarginSec = 30): number {
   return Date.now() + Math.max(0, (expiresIn - safetyMarginSec) * 1000);
