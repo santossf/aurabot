@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bot, AlertCircle } from 'lucide-react';
-import { auth } from '../lib/api';
-import { consumeStoredVerifier } from '../lib/avalonClient';
+import { exchangeCodeForToken, consumeStoredVerifier } from '../lib/avalonClient';
 import { useAuth } from '../hooks/useAuth';
 
 const T = {
@@ -12,21 +11,19 @@ const T = {
 };
 
 /**
- * Renderizada na rota /auth/callback (a mesma que está cadastrada
- * como redirect_uri no painel da Avalon).
+ * Renderizada na rota /oauth (mesma cadastrada como redirect_uri na Avalon).
  *
- * Fluxo:
- *   1. Lê ?code e ?error da URL
- *   2. Se erro → mostra mensagem e link para login
- *   3. Se code → recupera codeVerifier do sessionStorage
- *   4. Chama POST /auth/exchange com { code, codeVerifier }
- *   5. Recebe accessToken e instancia o SDK via useAuth.onTokenIssued()
- *   6. AuthProvider muda para "authenticated" e a app raiz redireciona pro /app
+ * Fluxo (todo no browser, sem backend):
+ *   1. Lê ?code da URL
+ *   2. Recupera codeVerifier do sessionStorage
+ *   3. Chama oauth.issueAccessTokenWithAuthCode(code, codeVerifier) via SDK
+ *   4. Notifica AuthProvider, que cria o ClientSdk autenticado
+ *   5. Redireciona para a área autenticada
  */
 export function CallbackPage() {
   const { onTokenIssued } = useAuth();
   const [error, setError] = useState<string | null>(null);
-  const ranRef = useRef(false); // evita double-fetch no StrictMode
+  const ranRef = useRef(false); // evita double-call no StrictMode
 
   useEffect(() => {
     if (ranRef.current) return;
@@ -54,13 +51,12 @@ export function CallbackPage() {
       }
 
       try {
-        const { accessToken, expiresAt } = await auth.exchange(code, codeVerifier);
-        await onTokenIssued(accessToken, expiresAt);
-        // Limpa a URL e leva para a área autenticada
+        const tokens = await exchangeCodeForToken(code, codeVerifier);
+        await onTokenIssued(tokens);
         window.history.replaceState({}, '', '/');
-      } catch (err) {
+      } catch (err: any) {
         console.error('[callback] falha na troca:', err);
-        setError('Não foi possível validar com a corretora. Tente novamente.');
+        setError(err?.message ?? 'Não foi possível validar com a corretora.');
       }
     })();
   }, [onTokenIssued]);
@@ -99,14 +95,12 @@ export function CallbackPage() {
           overflow: 'hidden',
         }}
       >
-        <div
-          style={{
-            position: 'absolute', top: -80, right: -80,
-            width: 200, height: 200,
-            background: `radial-gradient(circle, ${T.accent}22, transparent 70%)`,
-            pointerEvents: 'none',
-          }}
-        />
+        <div style={{
+          position: 'absolute', top: -80, right: -80,
+          width: 200, height: 200,
+          background: `radial-gradient(circle, ${T.accent}22, transparent 70%)`,
+          pointerEvents: 'none',
+        }} />
 
         <div
           style={{
@@ -134,8 +128,8 @@ export function CallbackPage() {
             <p style={{ margin: '0 0 24px', color: T.textDim, fontSize: 13, lineHeight: 1.5 }}>
               {error}
             </p>
-            <a
-              href="/login"
+            
+              href="/"
               style={{
                 display: 'inline-block',
                 padding: '10px 20px',
