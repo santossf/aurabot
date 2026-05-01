@@ -2,6 +2,7 @@ import { Wallet, GraduationCap, Zap, ArrowRight, Sparkles, TrendingUp } from 'lu
 import type { ClientSdk } from '@quadcode-tech/client-sdk-js';
 import { theme as T } from '../lib/theme';
 import { useBalances, type BalanceKind } from '../hooks/useBalances';
+import { suggestConfigForBalance } from '../lib/profile-suggester';
 
 interface PainelPageProps {
   user: { id: string; name?: string };
@@ -58,7 +59,7 @@ export function PainelPage({ user, sdk, onOpenScalping, onOpenAprender }: Painel
           Configure pelos cards abaixo. Cada IA opera de forma independente.
         </p>
 
-        <ScalpingIACard onClick={onOpenScalping} />
+        <ScalpingIACard onClick={onOpenScalping} balance={selected?.amount ?? 0} />
       </section>
 
       {/* Footer */}
@@ -295,7 +296,12 @@ function Row({ label, value }: { label: string; value: string }) {
 /* ============================================================
  * Card IA Scalping
  * ============================================================ */
-function ScalpingIACard({ onClick }: { onClick: () => void }) {
+function ScalpingIACard({ onClick, balance }: { onClick: () => void; balance: number }) {
+  const suggested = balance > 0 ? suggestConfigForBalance(balance) : null;
+  const profileLabel = suggested
+    ? suggested.profile[0].toUpperCase() + suggested.profile.slice(1)
+    : null;
+
   return (
     <div
       onClick={onClick}
@@ -342,11 +348,48 @@ function ScalpingIACard({ onClick }: { onClick: () => void }) {
         </span>
       </div>
 
+      {/* Análise da IA com perfil sugerido */}
+      {suggested && (
+        <div style={{
+          background: T.accentSoft,
+          border: `1px solid ${T.accent}33`,
+          borderRadius: 10,
+          padding: 14,
+          marginTop: 4,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <Sparkles size={12} color={T.accent} />
+            <span style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.1em',
+              color: T.accent,
+            }}>
+              ANÁLISE DA IA
+            </span>
+          </div>
+          <div style={{
+            fontSize: 13,
+            color: T.text,
+            lineHeight: 1.5,
+            marginBottom: 10,
+          }}>
+            Perfil sugerido: <strong style={{ color: T.accent }}>{profileLabel}</strong>
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, lineHeight: 1.5 }}>
+            {suggested.reasoning}
+          </div>
+        </div>
+      )}
+
       {/* Métricas */}
       <div style={metricsRowStyle}>
         <Metric label="GANHO 7D"     value="+US$ 0,00" tone="long" />
         <Metric label="OPERAÇÕES 7D" value="0" />
-        <Metric label="META DIÁRIA"  value="—" />
+        <Metric
+          label="META SUGERIDA"
+          value={suggested ? `US$ ${suggested.takeProfit.toFixed(2)}` : '—'}
+        />
       </div>
 
       <div style={lastOpStyle}>
