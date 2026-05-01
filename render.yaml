@@ -1,0 +1,47 @@
+# ============================================================================
+# RENDER BLUEPRINT — backend
+# ============================================================================
+# Cole esse arquivo na raiz do repositório. Ao conectar o repo no Render,
+# ele detecta o blueprint e cria o serviço automaticamente.
+# Os valores marcados como `sync: false` precisam ser preenchidos manualmente
+# no painel do Render (Environment > Add Environment Variable).
+
+services:
+  - type: web
+    name: auraabot-backend
+    env: node
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    plan: free
+    region: oregon
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+
+      # OAuth credentials — preencher no painel do Render (sync: false)
+      - key: AVALON_CLIENT_ID
+        value: 242284863837060
+      - key: AVALON_CLIENT_SECRET
+        sync: false
+      - key: AVALON_PLATFORM_ID
+        value: 199
+      - key: AVALON_SCOPE
+        value: full offline_access
+
+      # URLs Avalon
+      - key: AVALON_OAUTH_API_BASE_URL
+        value: https://api.trade.avalonbroker.com
+      - key: AVALON_WEBSOCKET_URL
+        value: wss://ws.trade.avalonbroker.com/echo/websocket
+      - key: AVALON_REDIRECT_URI
+        value: https://auraabot.online/oauth
+
+      # App
+      - key: FRONTEND_URL
+        value: https://auraabot.online
+      - key: SESSION_SECRET
+        generateValue: true   # Render gera valor seguro automaticamente

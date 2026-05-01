@@ -1,0 +1,27 @@
+# ============================================================================
+# CONFIGURAÇÃO DA NETLIFY
+# ============================================================================
+
+[build]
+  base    = "frontend"
+  publish = "frontend/dist"
+  command = "npm install && npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA: qualquer rota não-arquivo cai no index.html
+# Importante para que /oauth e /login funcionem ao recarregar a página
+[[redirects]]
+  from = "/*"
+  to   = "/index.html"
+  status = 200
+
+# Headers de segurança básicos
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
