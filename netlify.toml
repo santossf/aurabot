@@ -1,22 +1,27 @@
 # ============================================================================
 # CONFIGURAÇÃO DA NETLIFY
+# ----------------------------------------------------------------------------
+# IMPORTANTE: quando "base" está definido, a Netlify executa o build dentro
+# desse diretório, e o "publish" é relativo ao base. Por isso "publish" é
+# apenas "dist" (não "frontend/dist") — caso contrário a Netlify procura
+# em "frontend/frontend/dist", que não existe.
 # ============================================================================
-
+ 
 [build]
   base    = "frontend"
-  publish = "frontend/dist"
+  publish = "dist"
   command = "npm install && npm run build"
-
+ 
 [build.environment]
   NODE_VERSION = "20"
-
+ 
 # SPA: qualquer rota não-arquivo cai no index.html
 # Importante para que /oauth e /login funcionem ao recarregar a página
 [[redirects]]
   from = "/*"
   to   = "/index.html"
   status = 200
-
+ 
 # Headers de segurança básicos
 [[headers]]
   for = "/*"
