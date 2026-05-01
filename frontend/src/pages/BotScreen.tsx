@@ -159,7 +159,7 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
       {
         sdk,
         activeId,
-        assetSymbol: cleanTicker(activeInfo.ticker),
+        assetSymbol: cleanTicker(activeInfo.ticker) ?? activeInfo.ticker,
         config,
         balanceId: selectedBalance.id,
         balance: selectedBalance.amount,
