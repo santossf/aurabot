@@ -1,12 +1,14 @@
 /**
  * ============================================================================
- * AVALON / QUADCODE — wrapper com fetch interceptor
+ * AVALON / QUADCODE — wrapper server-side
  * ----------------------------------------------------------------------------
- * O SDK abafa o body da resposta de erro. Interceptamos o fetch global
- * durante a chamada do SDK para logar TUDO que a Avalon retorna.
+ * Implementação direta via fetch porque o SDK omite o client_secret no
+ * body, e a Avalon exige o secret em fluxos server-side (offline_access).
+ *
+ * Path descoberto via fetch-spy: /auth/oauth.v5/token
+ * Formato: application/json
  * ============================================================================
  */
-import { OAuthMethod } from '@quadcode-tech/client-sdk-js';
 import { env } from '../config/env.js';
  
 export interface ExchangeResult {
@@ -15,113 +17,93 @@ export interface ExchangeResult {
   expiresIn: number;
 }
  
-class CapturingTokensStorage {
-  private tokens: { accessToken: string; refreshToken?: string } = { accessToken: '' };
-  get() { return this.tokens; }
-  set(tokens: { accessToken: string; refreshToken?: string }) { this.tokens = tokens; }
-}
- 
-function buildOAuth(opts: { storage: CapturingTokensStorage; refreshToken?: string }) {
-  return new OAuthMethod(
-    env.AVALON_OAUTH_API_BASE_URL,
-    env.AVALON_CLIENT_ID as any,
-    env.AVALON_REDIRECT_URI,
-    env.AVALON_SCOPE,
-    env.AVALON_CLIENT_SECRET,
-    undefined,
-    opts.refreshToken,
-    undefined,
-    undefined,
-    undefined,
-    opts.storage as any,
-  );
-}
+const TOKEN_PATH = '/auth/oauth.v5/token';
  
 /**
- * Patcha o fetch global temporariamente para logar tudo que sai/entra
- * na chamada à Avalon. Retorna função para desfazer o patch.
+ * Troca o `code` por accessToken + refreshToken via chamada HTTP direta.
  */
-function installFetchSpy(): () => void {
-  const originalFetch = globalThis.fetch;
- 
-  globalThis.fetch = (async (input: any, init?: any) => {
-    const url = typeof input === 'string' ? input : input?.url;
-    const isAvalon = typeof url === 'string' && url.includes('avalonbroker');
- 
-    if (isAvalon) {
-      console.log('[fetch-spy] →', init?.method ?? 'GET', url);
-      console.log('[fetch-spy] → headers:', init?.headers);
-      if (init?.body) {
-        // Loga body mascarando o secret
-        const bodyStr = typeof init.body === 'string' ? init.body : '';
-        const masked = bodyStr.replace(/client_secret=[^&]+/g, 'client_secret=***');
-        console.log('[fetch-spy] → body:', masked);
-      }
-    }
- 
-    const response = await originalFetch(input, init);
- 
-    if (isAvalon) {
-      console.log('[fetch-spy] ← status:', response.status, response.statusText);
-      // Clona pra ler o body sem consumir o stream original
-      const clone = response.clone();
-      try {
-        const text = await clone.text();
-        console.log('[fetch-spy] ← body:', text.substring(0, 2000));
-      } catch (err) {
-        console.log('[fetch-spy] ← (não conseguiu ler body)', err);
-      }
-    }
- 
-    return response;
-  }) as typeof fetch;
- 
-  return () => { globalThis.fetch = originalFetch; };
-}
- 
 export async function exchangeAuthCode(
   code: string,
   codeVerifier: string,
 ): Promise<ExchangeResult> {
-  console.log('[avalon/exchange] iniciando troca');
+  const tokenUrl = `${env.AVALON_OAUTH_API_BASE_URL}${TOKEN_PATH}`;
  
-  const storage = new CapturingTokensStorage();
-  const oauth = buildOAuth({ storage });
-  const restoreFetch = installFetchSpy();
+  const payload = {
+    grant_type:    'authorization_code',
+    code,
+    redirect_uri:  env.AVALON_REDIRECT_URI,
+    client_id:     env.AVALON_CLIENT_ID,
+    client_secret: env.AVALON_CLIENT_SECRET,
+    code_verifier: codeVerifier,
+  };
  
-  try {
-    const result = await oauth.issueAccessTokenWithAuthCode(code, codeVerifier);
-    console.log('[avalon/exchange] SUCESSO');
-    return {
-      accessToken:  result.accessToken,
-      refreshToken: result.refreshToken,
-      expiresIn:    result.expiresIn,
-    };
-  } finally {
-    restoreFetch();
+  console.log('[avalon/exchange] POST', tokenUrl);
+  console.log('[avalon/exchange] keys enviadas:', Object.keys(payload));
+ 
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent':   'auraabot-server/1.0',
+    },
+    body: JSON.stringify(payload),
+  });
+ 
+  const text = await response.text();
+ 
+  if (!response.ok) {
+    console.error('[avalon/exchange] FALHOU - status:', response.status);
+    console.error('[avalon/exchange] resposta:', text);
+    throw new Error(`Avalon recusou: ${response.status} ${text}`);
   }
+ 
+  const data = JSON.parse(text);
+  console.log('[avalon/exchange] SUCESSO - expiresIn:', data.expires_in);
+ 
+  return {
+    accessToken:  data.access_token,
+    refreshToken: data.refresh_token,
+    expiresIn:    data.expires_in,
+  };
 }
  
+/**
+ * Renova accessToken usando refreshToken.
+ */
 export async function refreshAccessToken(
   refreshToken: string,
 ): Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }> {
-  const storage = new CapturingTokensStorage();
-  storage.set({ accessToken: '', refreshToken });
+  const tokenUrl = `${env.AVALON_OAUTH_API_BASE_URL}${TOKEN_PATH}`;
  
-  const oauth = buildOAuth({ storage, refreshToken });
-  const restoreFetch = installFetchSpy();
+  const payload = {
+    grant_type:    'refresh_token',
+    refresh_token: refreshToken,
+    client_id:     env.AVALON_CLIENT_ID,
+    client_secret: env.AVALON_CLIENT_SECRET,
+  };
  
-  try {
-    const result = await oauth.refreshAccessToken();
-    const updated = storage.get();
-    return {
-      accessToken:  result.accessToken,
-      expiresIn:    result.expiresIn,
-      refreshToken: updated.refreshToken ?? refreshToken,
-    };
-  } finally {
-    restoreFetch();
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent':   'auraabot-server/1.0',
+    },
+    body: JSON.stringify(payload),
+  });
+ 
+  const text = await response.text();
+ 
+  if (!response.ok) {
+    console.error('[avalon/refresh] FALHOU:', response.status, text);
+    throw new Error(`Refresh falhou: ${response.status} ${text}`);
   }
+ 
+  const data = JSON.parse(text);
+  return {
+    accessToken:  data.access_token,
+    expiresIn:    data.expires_in,
+    refreshToken: data.refresh_token,
+  };
 }
  
 export function computeExpiresAt(expiresIn: number, safetyMarginSec = 30): number {
