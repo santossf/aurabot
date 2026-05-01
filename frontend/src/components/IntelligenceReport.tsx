@@ -247,6 +247,7 @@ function OpenOperationBlock({ op }: { op: Operation }) {
 
 function ScanningBlock({ signal, state }: { signal: Signal | null; state: BotState }) {
   const confidence = state.kind === 'waiting_signal' ? state.lastConfidence : (signal?.confidence ?? 0);
+  const blockedReason = signal?.blockedReason;
 
   return (
     <div style={scanningBlockStyle}>
@@ -268,7 +269,7 @@ function ScanningBlock({ signal, state }: { signal: Signal | null; state: BotSta
         Analisando o mercado
       </div>
       <div style={{ fontSize: 12, color: T.textDim, marginTop: 4, textAlign: 'center', maxWidth: 220 }}>
-        IA processando indicadores em tempo real
+        {blockedReason ?? 'IA processando indicadores em tempo real'}
       </div>
 
       {confidence > 0 && (
@@ -282,15 +283,69 @@ function ScanningBlock({ signal, state }: { signal: Signal | null; state: BotSta
             marginBottom: 6,
           }}>
             <span>CONFIANÇA ATUAL</span>
-            <span>{Math.round(confidence)}%</span>
+            <span style={{
+              color: confidence >= 50 ? T.accent : T.textDim,
+              fontFamily: 'JetBrains Mono, monospace',
+              fontWeight: 700,
+            }}>
+              {Math.round(confidence)}%
+            </span>
           </div>
           <div style={confidenceBarBgStyle}>
             <div style={{
               ...confidenceBarFillStyle,
               width: `${confidence}%`,
-              background: confidence >= 60 ? T.accent : T.textMute,
+              background: confidence >= 50
+                ? `linear-gradient(90deg, ${T.accentDeep}, ${T.accent}, ${T.accentBright})`
+                : T.textMute,
             }} />
           </div>
+
+          {/* Lista de razões/sinais detectados (mesmo abaixo do threshold) */}
+          {signal && signal.reasons.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{
+                fontSize: 10,
+                letterSpacing: '0.12em',
+                color: T.textMute,
+                marginBottom: 8,
+              }}>
+                INDICADORES ATIVOS
+              </div>
+              {signal.reasons.slice(0, 4).map((r, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '4px 0',
+                    fontSize: 11,
+                    color: T.textDim,
+                  }}
+                >
+                  <span style={{
+                    flex: 1,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {r.label}
+                  </span>
+                  {r.weight > 0 && (
+                    <span style={{
+                      fontSize: 10,
+                      color: r.side === 'CALL' ? T.long : r.side === 'PUT' ? T.short : T.textMute,
+                      fontFamily: 'JetBrains Mono, monospace',
+                      marginLeft: 8,
+                    }}>
+                      {Math.round(r.weight * 100)}%
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
