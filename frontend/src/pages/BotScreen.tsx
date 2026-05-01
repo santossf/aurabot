@@ -167,7 +167,9 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
       {
         onStateChange: setBotState,
         onSignalUpdate: setSignal,
-        onOperationCreate: (op) => setOperations(prev => [...prev, op]),
+        onOperationCreate: (op) => setOperations(prev =>
+          prev.some(p => p.id === op.id) ? prev : [...prev, op]
+        ),
         onOperationUpdate: (op) => setOperations(prev => prev.map(p => p.id === op.id ? op : p)),
         onSequenceUpdate: setSequence,
         onSessionUpdate: setSession,
