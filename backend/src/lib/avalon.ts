@@ -1,9 +1,9 @@
 /**
  * ============================================================================
- * AVALON / QUADCODE — wrapper server-side
+ * AVALON / QUADCODE — wrapper com fetch interceptor
  * ----------------------------------------------------------------------------
- * Usa o SDK para a troca de tokens (ele conhece o path correto na API da
- * Avalon). Em caso de erro, capturamos contexto extra para diagnóstico.
+ * O SDK abafa o body da resposta de erro. Interceptamos o fetch global
+ * durante a chamada do SDK para logar TUDO que a Avalon retorna.
  * ============================================================================
  */
 import { OAuthMethod } from '@quadcode-tech/client-sdk-js';
@@ -15,27 +15,20 @@ export interface ExchangeResult {
   expiresIn: number;
 }
  
-/**
- * Storage de tokens que o SDK injeta. Capturamos os tokens via o método set().
- */
 class CapturingTokensStorage {
   private tokens: { accessToken: string; refreshToken?: string } = { accessToken: '' };
   get() { return this.tokens; }
   set(tokens: { accessToken: string; refreshToken?: string }) { this.tokens = tokens; }
 }
  
-function buildOAuth(opts: {
-  accessToken?: string;
-  refreshToken?: string;
-  storage: CapturingTokensStorage;
-}) {
+function buildOAuth(opts: { storage: CapturingTokensStorage; refreshToken?: string }) {
   return new OAuthMethod(
     env.AVALON_OAUTH_API_BASE_URL,
     env.AVALON_CLIENT_ID as any,
     env.AVALON_REDIRECT_URI,
     env.AVALON_SCOPE,
     env.AVALON_CLIENT_SECRET,
-    opts.accessToken,
+    undefined,
     opts.refreshToken,
     undefined,
     undefined,
@@ -45,68 +38,78 @@ function buildOAuth(opts: {
 }
  
 /**
- * Troca o `code` por accessToken + refreshToken via SDK.
- * Loga contexto detalhado em caso de erro para diagnóstico.
+ * Patcha o fetch global temporariamente para logar tudo que sai/entra
+ * na chamada à Avalon. Retorna função para desfazer o patch.
  */
+function installFetchSpy(): () => void {
+  const originalFetch = globalThis.fetch;
+ 
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = typeof input === 'string' ? input : input?.url;
+    const isAvalon = typeof url === 'string' && url.includes('avalonbroker');
+ 
+    if (isAvalon) {
+      console.log('[fetch-spy] →', init?.method ?? 'GET', url);
+      console.log('[fetch-spy] → headers:', init?.headers);
+      if (init?.body) {
+        // Loga body mascarando o secret
+        const bodyStr = typeof init.body === 'string' ? init.body : '';
+        const masked = bodyStr.replace(/client_secret=[^&]+/g, 'client_secret=***');
+        console.log('[fetch-spy] → body:', masked);
+      }
+    }
+ 
+    const response = await originalFetch(input, init);
+ 
+    if (isAvalon) {
+      console.log('[fetch-spy] ← status:', response.status, response.statusText);
+      // Clona pra ler o body sem consumir o stream original
+      const clone = response.clone();
+      try {
+        const text = await clone.text();
+        console.log('[fetch-spy] ← body:', text.substring(0, 2000));
+      } catch (err) {
+        console.log('[fetch-spy] ← (não conseguiu ler body)', err);
+      }
+    }
+ 
+    return response;
+  }) as typeof fetch;
+ 
+  return () => { globalThis.fetch = originalFetch; };
+}
+ 
 export async function exchangeAuthCode(
   code: string,
   codeVerifier: string,
 ): Promise<ExchangeResult> {
-  console.log('[avalon/exchange] iniciando troca, params:', {
-    apiBaseUrl:    env.AVALON_OAUTH_API_BASE_URL,
-    client_id:     env.AVALON_CLIENT_ID,
-    redirect_uri:  env.AVALON_REDIRECT_URI,
-    scope:         env.AVALON_SCOPE,
-    code_length:   code.length,
-    verifier_length: codeVerifier.length,
-    secret_set:    !!env.AVALON_CLIENT_SECRET,
-    secret_length: env.AVALON_CLIENT_SECRET.length,
-  });
+  console.log('[avalon/exchange] iniciando troca');
  
   const storage = new CapturingTokensStorage();
   const oauth = buildOAuth({ storage });
+  const restoreFetch = installFetchSpy();
  
   try {
     const result = await oauth.issueAccessTokenWithAuthCode(code, codeVerifier);
-    console.log('[avalon/exchange] SUCESSO - expiresIn:', result.expiresIn);
+    console.log('[avalon/exchange] SUCESSO');
     return {
       accessToken:  result.accessToken,
       refreshToken: result.refreshToken,
       expiresIn:    result.expiresIn,
     };
-  } catch (err: any) {
-    // Loga TUDO sobre o erro para descobrir a causa
-    console.error('[avalon/exchange] FALHOU');
-    console.error('[avalon/exchange] err.name:', err?.name);
-    console.error('[avalon/exchange] err.message:', err?.message);
-    console.error('[avalon/exchange] err.code:', err?.code);
-    console.error('[avalon/exchange] err.status:', err?.status);
-    console.error('[avalon/exchange] err.response:', err?.response);
-    console.error('[avalon/exchange] err.cause:', err?.cause);
-    if (err?.response?.data) {
-      console.error('[avalon/exchange] err.response.data:', err.response.data);
-    }
-    if (err?.body) {
-      console.error('[avalon/exchange] err.body:', err.body);
-    }
-    // Stringify para pegar tudo
-    try {
-      console.error('[avalon/exchange] err full:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
-    } catch {}
-    throw err;
+  } finally {
+    restoreFetch();
   }
 }
  
-/**
- * Renova o accessToken usando refreshToken.
- */
 export async function refreshAccessToken(
   refreshToken: string,
 ): Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }> {
   const storage = new CapturingTokensStorage();
   storage.set({ accessToken: '', refreshToken });
  
-  const oauth = buildOAuth({ refreshToken, storage });
+  const oauth = buildOAuth({ storage, refreshToken });
+  const restoreFetch = installFetchSpy();
  
   try {
     const result = await oauth.refreshAccessToken();
@@ -116,17 +119,11 @@ export async function refreshAccessToken(
       expiresIn:    result.expiresIn,
       refreshToken: updated.refreshToken ?? refreshToken,
     };
-  } catch (err: any) {
-    console.error('[avalon/refresh] FALHOU');
-    console.error('[avalon/refresh] err.message:', err?.message);
-    try {
-      console.error('[avalon/refresh] err full:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
-    } catch {}
-    throw err;
+  } finally {
+    restoreFetch();
   }
 }
  
-/** Helper: epoch ms até o token expirar (com folga de segurança). */
 export function computeExpiresAt(expiresIn: number, safetyMarginSec = 30): number {
   return Date.now() + Math.max(0, (expiresIn - safetyMarginSec) * 1000);
 }
