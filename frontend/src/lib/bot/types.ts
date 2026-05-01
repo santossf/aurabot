@@ -1,43 +1,70 @@
 import type { Direction, Expiration, Signal } from '../ai/engine.js';
-
+ 
 export type OperationStatus =
-  | 'pending'   // criada, aguardando confirmação da corretora
-  | 'open'      // em curso, candle de expiração ainda rolando
+  | 'analyzing'   // IA decidiu entrar mas ainda não enviou ordem
+  | 'pending'     // ordem enviada à corretora, aguardando confirmação
+  | 'open'        // confirmada, candle de expiração rolando
+  | 'expiring'    // últimos 3s antes do vencimento
   | 'win'
   | 'loss'
-  | 'error';    // falha ao abrir (ex: corretora rejeitou)
-
+  | 'error';
+ 
+export interface OperationAnalysis {
+  /** Score 0..100 — confiança da IA na entrada */
+  confidence: number;
+  /** Resumo curto em uma linha — ex: "EMA cruzou + RSI 28 + alta vol" */
+  summary: string;
+  /** Lista de sinais individuais que dispararam a entrada */
+  signals: Array<{ label: string; weight: number }>;
+}
+ 
 export interface Operation {
   id: string;
   asset: string;
   direction: Direction;
   amount: number;
   expiration: Expiration;
-  openedAt: number;       // epoch ms
-  expiresAt: number;      // epoch ms
+  openedAt: number;
+  expiresAt: number;
   status: OperationStatus;
-  pnl?: number;           // só após resolver
-  galeLevel: number;      // 0 = entrada inicial, 1 = primeiro gale, etc.
-  signal: Signal;         // snapshot da análise da IA no momento da entrada
+  pnl?: number;
+  galeLevel: number;
+  signal: Signal;
+  analysis: OperationAnalysis;
   brokerPositionId?: string | number;
   errorMessage?: string;
 }
-
+ 
+export type TakeProfitMode = 'absolute' | 'percent' | 'greens';
+ 
+export interface TakeProfitConfig {
+  mode: TakeProfitMode;
+  /** Em $ se mode=absolute, em % se mode=percent, em count se mode=greens */
+  value: number;
+}
+ 
 export type BotState =
   | { kind: 'idle' }
   | { kind: 'analyzing' }
   | { kind: 'waiting_signal'; lastConfidence: number }
   | { kind: 'placing_order' }
   | { kind: 'in_position'; operationId: string }
-  | { kind: 'stopped'; reason: 'stop_loss_hit' | 'manual' | 'error'; detail?: string };
-
+  | {
+      kind: 'stopped';
+      reason: 'stop_loss_hit' | 'take_profit_hit' | 'manual' | 'error';
+      detail?: string;
+    };
+ 
 export interface SequenceState {
-  /** Operações da sequência atual (entrada inicial + gales). Limpa ao vencer. */
   operations: Operation[];
-  /** Quantas perdas consecutivas até agora. */
   lossesInRow: number;
-  /** Total acumulado de perda na sequência atual. */
   accumulatedLoss: number;
-  /** Direção da entrada inicial — gales mantêm a mesma direção. */
   lockedDirection?: Direction;
+}
+ 
+/** Acumulado da sessão atual do bot — usado pra avaliar take profit. */
+export interface SessionStats {
+  greensCount: number;
+  totalPnl: number;
+  startBalance: number;
 }
