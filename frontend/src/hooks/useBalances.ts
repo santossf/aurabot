@@ -67,6 +67,29 @@ export function useBalances(sdk: ClientSdk | null): UseBalancesResult {
         const facade = await sdk.balances();
         const list = facade.getBalances();
 
+        // ─── DIAGNÓSTICO: mostrar todos os campos do Balance ───
+        // Remover depois de identificar o campo correto de "available".
+        for (const b of list) {
+          const obj = b as any;
+          console.log('[balances] full payload:', {
+            id:               obj.id,
+            type:             obj.type,
+            amount:           obj.amount,
+            availableAmount:  obj.availableAmount,
+            available:        obj.available,
+            freeAmount:       obj.freeAmount,
+            cashAmount:       obj.cashAmount,
+            equity:           obj.equity,
+            equityAmount:     obj.equityAmount,
+            usedMargin:       obj.usedMargin,
+            margin:           obj.margin,
+            currency:         obj.currency,
+            // tudo (lista de chaves)
+            allKeys: Object.keys(obj),
+          });
+        }
+        // ──────────────────────────────────────────────────────
+
         const initial = list.map(snapshotOf);
         if (!cancelled) {
           setBalances(initial);
