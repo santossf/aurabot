@@ -62,9 +62,8 @@ export function CallbackPage() {
         await onTokenIssued(tokens);
         setSteps(s => ({ ...s, loading: 'done' }));
 
-        // Pequena pausa para ver "tudo pronto" antes de redirecionar
-        await sleep(400);
-        window.history.replaceState({}, '', '/');
+        // Navega pro dashboard (replace evita o /oauth no histórico do browser)
+        window.location.replace('/');
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Falha desconhecida';
         console.error('[callback] falha:', err);
