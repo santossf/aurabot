@@ -32,10 +32,16 @@ function detectKind(b: any): BalanceKind {
 }
 
 function snapshotOf(b: any): BalanceSnapshot {
+  // 'available' = saldo livre para operar (exclui margem de CFDs abertos)
+  // 'amount'    = equity total (inclui posições abertas) — NÃO usar pra Blitz
+  const free = typeof b.available === 'number' && b.available >= 0
+    ? b.available
+    : (typeof b.amount === 'number' ? b.amount : 0);
+
   return {
     id:       b.id,
     kind:     detectKind(b),
-    amount:   typeof b.amount === 'number' ? b.amount : 0,
+    amount:   free,
     currency: b.currency ?? 'USD',
   };
 }
@@ -66,29 +72,6 @@ export function useBalances(sdk: ClientSdk | null): UseBalancesResult {
       try {
         const facade = await sdk.balances();
         const list = facade.getBalances();
-
-        // ─── DIAGNÓSTICO: mostrar todos os campos do Balance ───
-        // Remover depois de identificar o campo correto de "available".
-        for (const b of list) {
-          const obj = b as any;
-          console.log('[balances] full payload:', {
-            id:               obj.id,
-            type:             obj.type,
-            amount:           obj.amount,
-            availableAmount:  obj.availableAmount,
-            available:        obj.available,
-            freeAmount:       obj.freeAmount,
-            cashAmount:       obj.cashAmount,
-            equity:           obj.equity,
-            equityAmount:     obj.equityAmount,
-            usedMargin:       obj.usedMargin,
-            margin:           obj.margin,
-            currency:         obj.currency,
-            // tudo (lista de chaves)
-            allKeys: Object.keys(obj),
-          });
-        }
-        // ──────────────────────────────────────────────────────
 
         const initial = list.map(snapshotOf);
         if (!cancelled) {
