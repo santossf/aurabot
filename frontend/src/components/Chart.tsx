@@ -44,11 +44,13 @@ interface ChartProps {
   balance?: number;
   /** Tipo da banca (real ou demo) */
   balanceKind?: 'real' | 'demo';
+  /** Pill de status do bot (renderizado no header do gráfico) */
+  botStatus?: React.ReactNode;
 }
 
 export function Chart({
   candles, lastCandle, markers = [], loading,
-  ticker, assetName, balance, balanceKind,
+  ticker, assetName, balance, balanceKind, botStatus,
 }: ChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -203,6 +205,8 @@ export function Chart({
       {ticker && (
         <div style={headerStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            {botStatus}
+
             {/* Ticker + nome */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={tickerIconStyle}>
@@ -352,6 +356,7 @@ const headerStyle = {
   flexWrap: 'wrap' as const,
   gap: 12,
   flexShrink: 0,
+  rowGap: 8,
 };
 
 const tickerIconStyle = {
