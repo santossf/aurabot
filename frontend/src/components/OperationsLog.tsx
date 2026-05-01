@@ -1,246 +1,336 @@
+/**
+ * OperationsLog — lista de operações (abertas + fechadas).
+ *
+ * Formato de cada linha:
+ *   STATUS | ATIVO | Direção | Valor | Countdown ou Resultado
+ *
+ * Operações abertas aparecem no topo com countdown.
+ * Operações fechadas aparecem embaixo com WIN/LOSS e PnL.
+ */
 import { useEffect, useState } from 'react';
-import { TrendingUp, TrendingDown, CheckCircle2, XCircle, Loader2, AlertCircle, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, Clock } from 'lucide-react';
+import { theme as T } from '../lib/theme';
 import type { Operation } from '../lib/bot/types';
 
-const T = {
-  bg: '#0A0E14', bgElev: '#0F141C', panel: '#121821', panelHi: '#171E29',
-  border: '#1F2733', text: '#E6EDF3', textDim: '#8B97A8', textMute: '#5C677A',
-  accent: '#00E0B8', long: '#26D782', warn: '#F5A524', short: '#F0506E',
-};
-
-interface Props {
+interface OperationsLogProps {
   operations: Operation[];
 }
 
-export function OperationsLog({ operations }: Props) {
+export function OperationsLog({ operations }: OperationsLogProps) {
+  // Ordena: abertas primeiro (mais recente em cima), fechadas depois
+  const sorted = [...operations].sort((a, b) => {
+    const aOpen = isOpenStatus(a.status);
+    const bOpen = isOpenStatus(b.status);
+    if (aOpen && !bOpen) return -1;
+    if (!aOpen && bOpen) return 1;
+    return b.openedAt - a.openedAt;
+  });
+
+  const winRate = computeWinRate(operations);
+  const totalPnl = operations
+    .filter(o => o.pnl !== undefined)
+    .reduce((acc, o) => acc + (o.pnl ?? 0), 0);
+
   return (
-    <div style={{
-      background: T.bgElev,
-      borderTop: `1px solid ${T.border}`,
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: 0,
-      flex: 1,
-    }}>
-      {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 16px',
-        borderBottom: `1px solid ${T.border}`,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h3 style={{
-            margin: 0, fontSize: 11, letterSpacing: '0.12em',
-            color: T.textDim, fontWeight: 600,
+    <div style={containerStyle}>
+      <div style={headerStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{
+            fontSize: 11,
+            letterSpacing: '0.12em',
+            color: T.textMute,
+            fontWeight: 700,
           }}>
             ÚLTIMAS OPERAÇÕES
-          </h3>
-          <span style={{
-            fontSize: 10, color: T.textMute,
-            background: T.panel, padding: '2px 6px', borderRadius: 4,
-          }}>
-            {operations.length}
           </span>
+          <span style={countBadgeStyle}>{operations.length}</span>
         </div>
 
-        <Summary operations={operations} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+          <Stat label="WIN RATE" value={`${winRate}%`} tone={winRate >= 50 ? 'long' : 'short'} />
+          <Stat
+            label="P&L"
+            value={`${totalPnl >= 0 ? '+' : ''}$ ${totalPnl.toFixed(2)}`}
+            tone={totalPnl >= 0 ? 'long' : 'short'}
+          />
+        </div>
       </div>
 
-      {/* Tabela */}
-      {operations.length === 0 ? (
-        <div style={{
-          padding: 20, color: T.textMute, fontSize: 12, textAlign: 'center',
-        }}>
-          Nenhuma operação ainda. Inicie o bot para começar.
+      {sorted.length === 0 ? (
+        <div style={emptyStateStyle}>
+          <Clock size={20} color={T.textMute} />
+          <span style={{ marginLeft: 12 }}>
+            Nenhuma operação ainda. Inicie o bot para começar.
+          </span>
         </div>
       ) : (
-        <div style={{ overflowY: 'auto', flex: 1 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: T.bg }}>
-                <Th>Hora</Th>
-                <Th>Ativo</Th>
-                <Th>Direção</Th>
-                <Th>Gale</Th>
-                <Th align="right">Valor</Th>
-                <Th align="center">Exp.</Th>
-                <Th align="center">Status</Th>
-                <Th align="right">P&amp;L</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {operations.map(op => <OpRow key={op.id} op={op} />)}
-            </tbody>
-          </table>
+        <div style={tableWrapStyle}>
+          {sorted.map(op => <OperationRow key={op.id} op={op} />)}
         </div>
       )}
     </div>
   );
 }
 
-function Summary({ operations }: { operations: Operation[] }) {
-  const closed = operations.filter(o => o.status === 'win' || o.status === 'loss');
-  const wins = closed.filter(o => o.status === 'win').length;
-  const totalPnl = closed.reduce((acc, o) => acc + (o.pnl ?? 0), 0);
-  const winRate = closed.length === 0 ? 0 : (wins / closed.length) * 100;
+function OperationRow({ op }: { op: Operation }) {
+  const isCall = op.direction === 'CALL';
+  const sideColor = isCall ? T.long : T.short;
+  const isOpen = isOpenStatus(op.status);
+  const isWin = op.status === 'win';
+  const isLoss = op.status === 'loss';
 
   return (
-    <div style={{ display: 'flex', gap: 16, fontSize: 11 }}>
-      <SummaryStat label="Win rate" value={`${winRate.toFixed(0)}%`} accent={winRate >= 50 ? T.long : T.short} />
-      <SummaryStat label="P&L" value={`${totalPnl >= 0 ? '+' : ''}$ ${totalPnl.toFixed(2)}`} accent={totalPnl >= 0 ? T.long : T.short} />
-    </div>
-  );
-}
-
-function SummaryStat({ label, value, accent }: { label: string; value: string; accent: string }) {
-  return (
-    <div>
-      <span style={{ color: T.textMute, marginRight: 6, letterSpacing: '0.05em' }}>{label.toUpperCase()}</span>
-      <span style={{ color: accent, fontWeight: 600, fontFamily: '"JetBrains Mono", monospace' }}>{value}</span>
-    </div>
-  );
-}
-
-function Th({ children, align }: { children: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
-  return (
-    <th style={{
-      textAlign: align ?? 'left',
-      padding: '8px 12px',
-      fontSize: 10,
-      color: T.textMute,
-      letterSpacing: '0.08em',
-      fontWeight: 600,
-      borderBottom: `1px solid ${T.border}`,
-      position: 'sticky',
-      top: 0,
-      background: T.bg,
-      zIndex: 1,
-    }}>{typeof children === 'string' ? children.toUpperCase() : children}</th>
-  );
-}
-
-function Td({ children, align }: { children: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
-  return (
-    <td style={{
-      textAlign: align ?? 'left',
-      padding: '10px 12px',
-      borderBottom: `1px solid ${T.border}`,
-    }}>{children}</td>
-  );
-}
-
-function OpRow({ op }: { op: Operation }) {
-  const isUp = op.direction === 'CALL';
-
-  return (
-    <tr>
-      <Td>
-        <span style={{ color: T.textDim, fontFamily: '"JetBrains Mono", monospace', fontSize: 11 }}>
-          {fmtTime(op.openedAt)}
-        </span>
-      </Td>
-      <Td>
-        <span style={{ fontWeight: 600 }}>{op.asset}</span>
-      </Td>
-      <Td>
-        <DirectionBadge direction={op.direction} />
-      </Td>
-      <Td>
-        {op.galeLevel === 0
-          ? <span style={{ color: T.textMute }}>—</span>
-          : <span style={{
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
-              color: T.warn, background: T.warn + '1A',
-              padding: '2px 6px', borderRadius: 4,
-            }}>G{op.galeLevel}</span>
-        }
-      </Td>
-      <Td align="right">
-        <span style={{ fontFamily: '"JetBrains Mono", monospace' }}>
-          $ {op.amount.toFixed(2)}
-        </span>
-      </Td>
-      <Td align="center">
-        <span style={{ color: T.textDim, fontFamily: '"JetBrains Mono", monospace' }}>
-          {op.expiration}s
-        </span>
-      </Td>
-      <Td align="center">
-        <StatusBadge op={op} />
-      </Td>
-      <Td align="right">
-        {op.pnl !== undefined ? (
-          <span style={{
-            color: op.pnl >= 0 ? T.long : T.short,
-            fontWeight: 600,
-            fontFamily: '"JetBrains Mono", monospace',
-          }}>
-            {op.pnl >= 0 ? '+' : ''}{op.pnl.toFixed(2)}
-          </span>
-        ) : (
-          <span style={{ color: T.textMute }}>—</span>
-        )}
-      </Td>
-    </tr>
-  );
-}
-
-function DirectionBadge({ direction }: { direction: 'CALL' | 'PUT' }) {
-  const isUp = direction === 'CALL';
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      color: isUp ? T.long : T.short,
-      fontWeight: 700, fontSize: 11, letterSpacing: '0.05em',
+    <div style={{
+      ...rowStyle,
+      borderLeftColor:
+        isWin    ? T.long :
+        isLoss   ? T.short :
+        isOpen   ? T.accent :
+                   T.border,
     }}>
-      {isUp ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-      {direction}
-    </span>
+      {/* STATUS */}
+      <div style={{ width: 130, flexShrink: 0 }}>
+        <StatusBadge op={op} />
+      </div>
+
+      {/* ATIVO */}
+      <div style={{ width: 100, flexShrink: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>
+          {op.asset}
+        </div>
+        <div style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.06em' }}>
+          BLITZ {op.expiration}s
+        </div>
+      </div>
+
+      {/* DIREÇÃO */}
+      <div style={{ width: 100, flexShrink: 0 }}>
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '3px 8px',
+          background: sideColor + '22',
+          color: sideColor,
+          borderRadius: 5,
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+        }}>
+          {isCall ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+          {isCall ? 'COMPRA' : 'VENDA'}
+        </div>
+      </div>
+
+      {/* VALOR */}
+      <div style={{ width: 90, flexShrink: 0 }}>
+        <div style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: T.text,
+          fontFamily: 'JetBrains Mono, monospace',
+        }}>
+          ${op.amount.toFixed(2)}
+        </div>
+        {op.galeLevel > 0 && (
+          <div style={{ fontSize: 9, color: T.warn, letterSpacing: '0.06em' }}>
+            GALE {op.galeLevel}
+          </div>
+        )}
+      </div>
+
+      {/* COUNTDOWN ou RESULTADO */}
+      <div style={{ flex: 1, textAlign: 'right' }}>
+        {isOpen ? (
+          <LiveCountdown expiresAt={op.expiresAt} />
+        ) : op.status === 'error' ? (
+          <span style={{ fontSize: 11, color: T.short }}>
+            {op.errorMessage ?? 'Erro'}
+          </span>
+        ) : op.pnl !== undefined ? (
+          <div style={{
+            fontSize: 14,
+            fontWeight: 700,
+            color: op.pnl >= 0 ? T.long : T.short,
+            fontFamily: 'JetBrains Mono, monospace',
+          }}>
+            {op.pnl >= 0 ? '+' : ''}${op.pnl.toFixed(2)}
+          </div>
+        ) : (
+          <span style={{ fontSize: 12, color: T.textMute }}>—</span>
+        )}
+      </div>
+    </div>
   );
 }
 
 function StatusBadge({ op }: { op: Operation }) {
-  if (op.status === 'open' || op.status === 'pending') {
-    return <OpenStatusCountdown op={op} />;
-  }
-  if (op.status === 'win') {
-    return <Pill color={T.long} icon={<CheckCircle2 size={11} />}>WIN</Pill>;
-  }
-  if (op.status === 'loss') {
-    return <Pill color={T.short} icon={<XCircle size={11} />}>LOSS</Pill>;
-  }
-  return <Pill color={T.warn} icon={<AlertCircle size={11} />}>ERRO</Pill>;
-}
+  const config = getStatusConfig(op);
 
-function OpenStatusCountdown({ op }: { op: Operation }) {
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setTick(t => t + 1), 250);
-    return () => window.clearInterval(id);
-  }, []);
-  const remainingMs = Math.max(0, op.expiresAt - Date.now());
-  const remaining = (remainingMs / 1000).toFixed(1);
   return (
-    <Pill color={T.accent} icon={<Loader2 size={11} className="spin" />}>
-      <span style={{ fontFamily: '"JetBrains Mono", monospace' }}>{remaining}s</span>
-    </Pill>
-  );
-}
-
-function Pill({ color, icon, children }: { color: string; icon?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      color, fontWeight: 700, fontSize: 10, letterSpacing: '0.08em',
-      background: color + '1A', padding: '3px 8px', borderRadius: 4,
+    <div style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '4px 10px',
+      background: config.bg,
+      color: config.color,
+      borderRadius: 5,
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: '0.08em',
     }}>
-      {icon}{children}
-    </span>
+      {config.dot && (
+        <span style={{
+          width: 5, height: 5, borderRadius: '50%',
+          background: config.color,
+          marginRight: 6,
+          display: 'inline-block',
+          boxShadow: `0 0 6px currentColor`,
+          animation: config.pulse ? 'pulse 1.4s ease-in-out infinite' : 'none',
+        }} />
+      )}
+      {config.label}
+    </div>
   );
 }
 
-function fmtTime(epoch: number): string {
-  const d = new Date(epoch);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+function LiveCountdown({ expiresAt }: { expiresAt: number }) {
+  const [remaining, setRemaining] = useState(() => Math.max(0, expiresAt - Date.now()));
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setRemaining(Math.max(0, expiresAt - Date.now()));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [expiresAt]);
+
+  const seconds = Math.ceil(remaining / 1000);
+  const isUrgent = seconds <= 3;
+
+  return (
+    <div style={{
+      fontSize: 16,
+      fontWeight: 700,
+      color: isUrgent ? T.warn : T.text,
+      fontFamily: 'JetBrains Mono, monospace',
+      letterSpacing: '-0.02em',
+    }}>
+      00:{seconds.toString().padStart(2, '0')}
+    </div>
+  );
 }
+
+function Stat({ label, value, tone }: { label: string; value: string; tone?: 'long' | 'short' }) {
+  return (
+    <div>
+      <span style={{
+        fontSize: 10,
+        letterSpacing: '0.1em',
+        color: T.textMute,
+        marginRight: 6,
+      }}>
+        {label}
+      </span>
+      <span style={{
+        fontSize: 12,
+        fontWeight: 700,
+        color: tone === 'long' ? T.long : tone === 'short' ? T.short : T.text,
+        fontFamily: 'JetBrains Mono, monospace',
+      }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* ============================================================
+ * Helpers
+ * ============================================================ */
+
+function isOpenStatus(status: Operation['status']): boolean {
+  return status === 'analyzing' || status === 'pending' || status === 'open' || status === 'expiring';
+}
+
+function getStatusConfig(op: Operation) {
+  switch (op.status) {
+    case 'analyzing':
+      return { label: 'EM ANÁLISE', bg: T.accentSoft, color: T.accent, dot: true, pulse: true };
+    case 'pending':
+      return { label: 'ENVIANDO', bg: T.accentSoft, color: T.accent, dot: true, pulse: true };
+    case 'open':
+      return { label: 'ABERTA', bg: T.accentSoft, color: T.accent, dot: true, pulse: true };
+    case 'expiring':
+      return { label: 'EXPIRANDO', bg: T.warn + '22', color: T.warn, dot: true, pulse: true };
+    case 'win':
+      return { label: 'WIN', bg: T.longSoft, color: T.long, dot: false, pulse: false };
+    case 'loss':
+      return { label: 'LOSS', bg: T.shortSoft, color: T.short, dot: false, pulse: false };
+    case 'error':
+      return { label: 'ERRO', bg: T.shortSoft, color: T.short, dot: false, pulse: false };
+  }
+}
+
+function computeWinRate(ops: Operation[]): number {
+  const closed = ops.filter(o => o.status === 'win' || o.status === 'loss');
+  if (closed.length === 0) return 0;
+  const wins = closed.filter(o => o.status === 'win').length;
+  return Math.round((wins / closed.length) * 100);
+}
+
+/* ============================================================
+ * Styles
+ * ============================================================ */
+
+const containerStyle = {
+  background: T.panel,
+  border: `1px solid ${T.border}`,
+  borderRadius: 14,
+  padding: 20,
+};
+
+const headerStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  paddingBottom: 16,
+  borderBottom: `1px solid ${T.border}`,
+  marginBottom: 4,
+};
+
+const countBadgeStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '2px 8px',
+  background: T.bgElev,
+  color: T.textDim,
+  fontSize: 10,
+  fontWeight: 700,
+  borderRadius: 4,
+  fontFamily: 'JetBrains Mono, monospace',
+};
+
+const tableWrapStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: 4,
+};
+
+const rowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 16,
+  padding: '12px 14px',
+  background: T.bgElev,
+  borderRadius: 8,
+  borderLeft: `3px solid ${T.border}`,
+  transition: 'background 120ms',
+};
+
+const emptyStateStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '40px 24px',
+  color: T.textMute,
+  fontSize: 13,
+};
