@@ -159,7 +159,7 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
       {
         sdk,
         activeId,
-        assetSymbol: activeInfo.ticker,
+        assetSymbol: cleanTicker(activeInfo.ticker),
         config,
         balanceId: selectedBalance.id,
         balance: selectedBalance.amount,
@@ -201,6 +201,64 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
           50%  { opacity: 1; }
           100% { opacity: 0.4; }
         }
+
+        /* Layout principal — desktop */
+        .bot-main-grid {
+          flex: 1;
+          display: grid;
+          grid-template-columns: 1fr 320px 360px;
+          gap: 16px;
+          padding: 16px;
+          min-height: 0;
+        }
+        .bot-left-col {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          min-width: 0;
+        }
+        .bot-controls-col {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 20px;
+          background: ${T.panel};
+          border: 1px solid ${T.border};
+          border-radius: 14px;
+          height: fit-content;
+          position: sticky;
+          top: 16px;
+        }
+        .bot-report-col {
+          position: sticky;
+          top: 16px;
+          height: fit-content;
+        }
+
+        /* Tablets — 2 colunas */
+        @media (max-width: 1280px) {
+          .bot-main-grid {
+            grid-template-columns: 1fr 320px;
+          }
+          .bot-report-col {
+            grid-column: 1 / -1;
+            position: static;
+          }
+        }
+
+        /* Mobile — empilhado */
+        @media (max-width: 768px) {
+          .bot-main-grid {
+            grid-template-columns: 1fr;
+            gap: 12px;
+            padding: 12px;
+          }
+          .bot-controls-col,
+          .bot-report-col {
+            position: static;
+            grid-column: 1;
+          }
+        }
       `}</style>
 
       {/* Topbar */}
@@ -227,20 +285,20 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
       </header>
 
       {/* Layout principal */}
-      <div style={mainGridStyle}>
+      <div className="bot-main-grid">
         {/* Coluna esquerda: gráfico + log */}
-        <div style={leftColStyle}>
+        <div className="bot-left-col">
           <div style={chartWrapStyle}>
-            <BotStatusPill state={botState} isRunning={isRunning} />
             <Chart
               candles={candles}
               lastCandle={lastCandle}
               markers={markers}
               loading={chartLoading}
-              ticker={activeInfo?.ticker}
+              ticker={cleanTicker(activeInfo?.ticker)}
               assetName={activeInfo ? `BLITZ · ${activeInfo.incomePercent}% retorno` : undefined}
               balance={selectedBalance?.amount}
               balanceKind={selectedBalance?.kind}
+              botStatus={<BotStatusPill state={botState} isRunning={isRunning} />}
             />
             <ScannerOverlay active={isRunning && !activeOperation} />
           </div>
@@ -249,7 +307,7 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
         </div>
 
         {/* Coluna do meio: controles do bot */}
-        <div style={controlsColStyle}>
+        <div className="bot-controls-col">
           <div style={panelTitleStyle}>CONTROLE DO BOT</div>
 
           {/* Bloco de recomendação da IA */}
@@ -464,7 +522,7 @@ export function BotScreen({ sdk, onBack }: BotScreenProps) {
         </div>
 
         {/* Coluna direita: relatório de inteligência */}
-        <div style={reportColStyle}>
+        <div className="bot-report-col">
           <IntelligenceReport
             state={botState}
             signal={signal}
@@ -494,27 +552,24 @@ function BotStatusPill({ state, isRunning }: { state: BotState; isRunning: boole
 
   return (
     <div style={{
-      position: 'absolute',
-      top: 16,
-      left: 16,
-      zIndex: 10,
       display: 'inline-flex',
       alignItems: 'center',
-      padding: '6px 12px',
-      background: T.bgElev + 'E0',
-      backdropFilter: 'blur(8px)',
+      padding: '5px 10px',
+      background: T.bgElev,
       border: `1px solid ${T.border}`,
-      borderRadius: 8,
-      fontSize: 11,
+      borderRadius: 6,
+      fontSize: 10,
       fontWeight: 700,
       letterSpacing: '0.08em',
       color,
+      flexShrink: 0,
+      whiteSpace: 'nowrap',
     }}>
       <span style={{
-        width: 6, height: 6, borderRadius: '50%',
+        width: 5, height: 5, borderRadius: '50%',
         background: color,
-        marginRight: 8,
-        boxShadow: isRunning ? `0 0 8px ${color}` : 'none',
+        marginRight: 6,
+        boxShadow: isRunning ? `0 0 6px ${color}` : 'none',
         animation: isRunning ? 'pulse 1.4s ease-in-out infinite' : 'none',
       }} />
       {label}
@@ -559,11 +614,11 @@ function AssetSelector({
           fontWeight: 800,
           letterSpacing: '-0.02em',
         }}>
-          {current?.ticker.slice(0, 3) ?? '...'}
+          {cleanTicker(current?.ticker)?.slice(0, 3) ?? '...'}
         </div>
         <div style={{ textAlign: 'left' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>
-            {current?.ticker ?? (loading ? 'Carregando...' : 'Selecionar ativo')}
+            {cleanTicker(current?.ticker) ?? (loading ? 'Carregando...' : 'Selecionar ativo')}
           </div>
           <div style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.06em' }}>
             BLITZ OPTIONS {current ? `· ${current.incomePercent}%` : ''}
@@ -589,7 +644,7 @@ function AssetSelector({
                 background: a.id === activeId ? T.accentSoft : 'transparent',
               }}
             >
-              <span style={{ fontWeight: 600, color: T.text }}>{a.ticker}</span>
+              <span style={{ fontWeight: 600, color: T.text }}>{cleanTicker(a.ticker)}</span>
               <span style={{ fontSize: 10, color: T.textMute }}>
                 {a.isSuspended ? 'SUSPENSO' : `${a.incomePercent}%`}
               </span>
@@ -789,22 +844,6 @@ const backButtonStyle = {
   fontFamily: 'inherit',
 };
 
-const mainGridStyle = {
-  flex: 1,
-  display: 'grid',
-  gridTemplateColumns: '1fr 320px 360px',
-  gap: 16,
-  padding: 16,
-  minHeight: 0,
-};
-
-const leftColStyle = {
-  display: 'flex',
-  flexDirection: 'column' as const,
-  gap: 16,
-  minWidth: 0,
-};
-
 const chartWrapStyle = {
   position: 'relative' as const,
   background: T.panel,
@@ -812,26 +851,9 @@ const chartWrapStyle = {
   borderRadius: 14,
   height: 480,
   overflow: 'hidden' as const,
-  padding: 12,
-};
-
-const controlsColStyle = {
+  padding: 0,
   display: 'flex',
   flexDirection: 'column' as const,
-  gap: 12,
-  padding: 20,
-  background: T.panel,
-  border: `1px solid ${T.border}`,
-  borderRadius: 14,
-  height: 'fit-content',
-  position: 'sticky' as const,
-  top: 16,
-};
-
-const reportColStyle = {
-  position: 'sticky' as const,
-  top: 16,
-  height: 'fit-content',
 };
 
 const panelTitleStyle = {
@@ -1043,3 +1065,16 @@ const dropdownItemStyle = {
   fontFamily: 'inherit',
   textAlign: 'left' as const,
 };
+
+/**
+ * Remove sufixos OTC do ticker para exibição.
+ * Ex: "EURUSD-OTC" → "EURUSD", "EUR/USD (OTC)" → "EUR/USD"
+ */
+function cleanTicker(ticker: string | null | undefined): string | undefined {
+  if (!ticker) return undefined;
+  return ticker
+    .replace(/-OTC\b/g, '')
+    .replace(/\s*\(OTC\)\s*/gi, '')
+    .replace(/\s*OTC\s*/gi, ' ')
+    .trim();
+}
