@@ -1,378 +1,499 @@
-import { Brain, TrendingUp, TrendingDown, Minus, Activity } from 'lucide-react';
-import type { Signal } from '../lib/ai/engine';
+/**
+ * IntelligenceReport — painel direito da BotScreen.
+ *
+ * Mostra:
+ *   - Bot inativo: aguardando dados
+ *   - Bot ativo procurando sinal: scanner + status
+ *   - Bot com operação aberta: bloco visual com:
+ *     • Header (ATIVO + valor)
+ *     • Score de confiança + barra
+ *     • Lista de sinais usados
+ *     • Countdown grande
+ */
+import { useEffect, useState } from 'react';
+import { Sparkles, Activity, TrendingUp, TrendingDown, Loader } from 'lucide-react';
+import { theme as T } from '../lib/theme';
 import type { Operation, BotState } from '../lib/bot/types';
-import { thresholdFor, type Profile } from '../lib/ai/engine';
+import type { Signal } from '../lib/ai/engine';
 
-const T = {
-  bg: '#0A0E14', bgElev: '#0F141C', panel: '#121821', panelHi: '#171E29',
-  border: '#1F2733', text: '#E6EDF3', textDim: '#8B97A8', textMute: '#5C677A',
-  accent: '#00E0B8', accentDim: '#00E0B833',
-  long: '#26D782', warn: '#F5A524', short: '#F0506E',
+interface IntelligenceReportProps {
+  state: BotState;
+  signal: Signal | null;
+  activeOperation: Operation | null;
+}
+
+export function IntelligenceReport({ state, signal, activeOperation }: IntelligenceReportProps) {
+  return (
+    <div style={containerStyle}>
+      <div style={headerStyle}>
+        <div style={iconWrapStyle}>
+          <Sparkles size={16} color={T.accent} />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.text, letterSpacing: '0.04em' }}>
+            RELATÓRIO DE INTELIGÊNCIA
+          </div>
+          <div style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.08em', marginTop: 2 }}>
+            LEITURA AO VIVO
+          </div>
+        </div>
+      </div>
+
+      <div style={contentStyle}>
+        {renderContent(state, signal, activeOperation)}
+      </div>
+    </div>
+  );
+}
+
+function renderContent(state: BotState, signal: Signal | null, op: Operation | null) {
+  if (op && (op.status === 'analyzing' || op.status === 'pending' || op.status === 'open' || op.status === 'expiring')) {
+    return <OpenOperationBlock op={op} />;
+  }
+
+  if (state.kind === 'analyzing' || state.kind === 'waiting_signal') {
+    return <ScanningBlock signal={signal} state={state} />;
+  }
+
+  if (state.kind === 'placing_order') {
+    return (
+      <CenteredMessage
+        icon={<Loader size={20} color={T.accent} />}
+        title="Enviando ordem"
+        subtitle="Validando entrada com a corretora"
+      />
+    );
+  }
+
+  if (state.kind === 'stopped') {
+    const isWin = state.reason === 'take_profit_hit';
+    return (
+      <CenteredMessage
+        icon={isWin
+          ? <TrendingUp size={20} color={T.long} />
+          : <Activity size={20} color={T.short} />
+        }
+        title={isWin ? 'Meta atingida' : 'Bot parado'}
+        subtitle={state.detail ?? 'Aguardando reinício manual'}
+        tone={isWin ? 'long' : 'short'}
+      />
+    );
+  }
+
+  return (
+    <CenteredMessage
+      icon={<Activity size={20} color={T.textMute} />}
+      title="Bot inativo"
+      subtitle="Aguardando dados de mercado..."
+    />
+  );
+}
+
+function OpenOperationBlock({ op }: { op: Operation }) {
+  const remaining = useCountdown(op.expiresAt);
+  const isCall = op.direction === 'CALL';
+  const sideColor = isCall ? T.long : T.short;
+  const sideLabel = isCall ? 'COMPRA' : 'VENDA';
+
+  const statusLabel =
+    op.status === 'analyzing' ? 'EM ANÁLISE' :
+    op.status === 'pending'   ? 'ENVIANDO' :
+    op.status === 'expiring'  ? 'EXPIRANDO' :
+                                'OPERAÇÃO ABERTA';
+
+  return (
+    <div style={openOpStyle}>
+      <div style={{
+        ...statusBadgeStyle,
+        background: op.status === 'analyzing' ? T.accentSoft : sideColor + '22',
+        color:      op.status === 'analyzing' ? T.accent     : sideColor,
+      }}>
+        <span style={{
+          width: 6, height: 6, borderRadius: '50%',
+          background: op.status === 'analyzing' ? T.accent : sideColor,
+          marginRight: 8,
+          display: 'inline-block',
+          boxShadow: `0 0 8px currentColor`,
+          animation: 'pulse 1.4s ease-in-out infinite',
+        }} />
+        {statusLabel}
+      </div>
+
+      <div style={opHeaderStyle}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: T.text, letterSpacing: '-0.02em' }}>
+            {op.asset}
+          </div>
+          <div style={{
+            fontSize: 11,
+            color: T.textMute,
+            letterSpacing: '0.08em',
+            marginTop: 4,
+          }}>
+            BLITZ · {op.expiration}s
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 10px',
+            background: sideColor + '22',
+            color: sideColor,
+            borderRadius: 6,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+          }}>
+            {isCall ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+            {sideLabel}
+          </div>
+          <div style={{
+            fontSize: 18,
+            fontWeight: 700,
+            color: T.text,
+            marginTop: 8,
+            fontFamily: 'JetBrains Mono, monospace',
+          }}>
+            ${op.amount.toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      <div style={analysisBlockStyle}>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'baseline',
+            marginBottom: 8,
+          }}>
+            <span style={{ fontSize: 10, letterSpacing: '0.12em', color: T.textMute }}>
+              CONFIANÇA DA IA
+            </span>
+            <span style={{
+              fontSize: 22,
+              fontWeight: 800,
+              color: T.accent,
+              fontFamily: 'JetBrains Mono, monospace',
+            }}>
+              {op.analysis.confidence}%
+            </span>
+          </div>
+
+          <div style={confidenceBarBgStyle}>
+            <div style={{
+              ...confidenceBarFillStyle,
+              width: `${op.analysis.confidence}%`,
+            }} />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 16 }}>
+          <div style={{
+            fontSize: 10,
+            letterSpacing: '0.12em',
+            color: T.textMute,
+            marginBottom: 8,
+          }}>
+            SINAIS DETECTADOS · {op.analysis.signals.length}
+          </div>
+          {op.analysis.signals.slice(0, 5).map((s, i) => (
+            <div key={i} style={signalRowStyle}>
+              <span style={{
+                width: 14, height: 14, borderRadius: '50%',
+                background: T.accentSoft,
+                display: 'grid', placeItems: 'center',
+                flexShrink: 0,
+              }}>
+                <svg width="8" height="8" viewBox="0 0 12 12">
+                  <path d="M2 6 L5 9 L10 3" stroke={T.accent} strokeWidth="2" fill="none" strokeLinecap="round" />
+                </svg>
+              </span>
+              <span style={{ flex: 1, fontSize: 12, color: T.text }}>
+                {s.label}
+              </span>
+              <span style={{
+                fontSize: 10,
+                color: T.textMute,
+                fontFamily: 'JetBrains Mono, monospace',
+              }}>
+                {Math.round(s.weight * 100)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={countdownBlockStyle}>
+        <div style={{ fontSize: 10, letterSpacing: '0.12em', color: T.textMute, marginBottom: 8 }}>
+          TEMPO RESTANTE
+        </div>
+        <div style={{
+          fontSize: 40,
+          fontWeight: 800,
+          color: remaining < 3000 ? T.warn : T.text,
+          fontFamily: 'JetBrains Mono, monospace',
+          letterSpacing: '-0.02em',
+          lineHeight: 1,
+        }}>
+          {formatCountdown(remaining)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScanningBlock({ signal, state }: { signal: Signal | null; state: BotState }) {
+  const confidence = state.kind === 'waiting_signal' ? state.lastConfidence : (signal?.confidence ?? 0);
+
+  return (
+    <div style={scanningBlockStyle}>
+      <style>{`
+        @keyframes radar-pulse {
+          0%   { transform: scale(0.4); opacity: 1; }
+          100% { transform: scale(1.4); opacity: 0; }
+        }
+      `}</style>
+      <div style={radarWrapStyle}>
+        <div style={radarRingStyle} />
+        <div style={{ ...radarRingStyle, animationDelay: '0.5s' }} />
+        <div style={radarCenterStyle}>
+          <Sparkles size={14} color={T.bg} />
+        </div>
+      </div>
+
+      <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginTop: 24 }}>
+        Analisando o mercado
+      </div>
+      <div style={{ fontSize: 12, color: T.textDim, marginTop: 4, textAlign: 'center', maxWidth: 220 }}>
+        IA processando indicadores em tempo real
+      </div>
+
+      {confidence > 0 && (
+        <div style={{ width: '100%', marginTop: 24 }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            color: T.textMute,
+            marginBottom: 6,
+          }}>
+            <span>CONFIANÇA ATUAL</span>
+            <span>{Math.round(confidence)}%</span>
+          </div>
+          <div style={confidenceBarBgStyle}>
+            <div style={{
+              ...confidenceBarFillStyle,
+              width: `${confidence}%`,
+              background: confidence >= 60 ? T.accent : T.textMute,
+            }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CenteredMessage({
+  icon, title, subtitle, tone,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  tone?: 'long' | 'short';
+}) {
+  return (
+    <div style={centeredMessageStyle}>
+      <div style={{
+        ...iconWrapLargeStyle,
+        background:
+          tone === 'long'  ? T.longSoft :
+          tone === 'short' ? T.shortSoft :
+                             T.bgElev,
+      }}>
+        {icon}
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: T.text, marginTop: 16 }}>
+        {title}
+      </div>
+      {subtitle && (
+        <div style={{ fontSize: 12, color: T.textDim, marginTop: 4, textAlign: 'center' }}>
+          {subtitle}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function useCountdown(expiresAt: number): number {
+  const [remaining, setRemaining] = useState(() => Math.max(0, expiresAt - Date.now()));
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setRemaining(Math.max(0, expiresAt - Date.now()));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [expiresAt]);
+
+  return remaining;
+}
+
+function formatCountdown(ms: number): string {
+  const totalSec = Math.ceil(ms / 1000);
+  const mm = Math.floor(totalSec / 60).toString().padStart(2, '0');
+  const ss = (totalSec % 60).toString().padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+const containerStyle = {
+  background: T.panel,
+  border: `1px solid ${T.border}`,
+  borderRadius: 14,
+  padding: 20,
+  display: 'flex',
+  flexDirection: 'column' as const,
+  height: '100%',
+  minHeight: 360,
 };
 
-interface Props {
-  liveSignal: Signal | null;
-  openOperation: Operation | null;
-  state: BotState;
-  profile: Profile;
-}
+const headerStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  paddingBottom: 16,
+  borderBottom: `1px solid ${T.border}`,
+  marginBottom: 16,
+};
 
-/**
- * Estratégia de exibição:
- *   - Se há operação aberta → mostra o snapshot do sinal QUE FUNDAMENTOU a entrada
- *   - Se não há operação aberta → mostra a leitura ao vivo da IA
- * O usuário sempre tem contexto: o que motivou a entrada atual ou o que a IA
- * está pensando agora.
- */
-export function IntelligenceReport({ liveSignal, openOperation, state, profile }: Props) {
-  const showingFor = openOperation ? 'in_position' : 'live';
-  const signal = openOperation?.signal ?? liveSignal;
-  const threshold = thresholdFor(profile);
+const iconWrapStyle = {
+  width: 32,
+  height: 32,
+  borderRadius: 8,
+  background: T.accentSoft,
+  display: 'grid',
+  placeItems: 'center',
+};
 
-  return (
-    <div style={{
-      background: T.bgElev,
-      borderLeft: `1px solid ${T.border}`,
-      borderTop: `1px solid ${T.border}`,
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: 0,
-      width: 320,
-    }}>
-      {/* Header */}
-      <div style={{
-        padding: '10px 16px',
-        borderBottom: `1px solid ${T.border}`,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}>
-        <div style={{
-          width: 26, height: 26, borderRadius: 7,
-          background: `linear-gradient(135deg, ${T.accent}, ${T.accent}66)`,
-          display: 'grid', placeItems: 'center',
-          boxShadow: `0 0 12px ${T.accentDim}`,
-        }}>
-          <Brain size={14} color={T.bg} strokeWidth={2.5} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <h3 style={{
-            margin: 0, fontSize: 11, letterSpacing: '0.12em',
-            color: T.textDim, fontWeight: 600,
-          }}>
-            RELATÓRIO DE INTELIGÊNCIA
-          </h3>
-          <span style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.05em' }}>
-            {showingFor === 'in_position' ? 'OPERAÇÃO EM CURSO' : 'LEITURA AO VIVO'}
-          </span>
-        </div>
-      </div>
+const contentStyle = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column' as const,
+};
 
-      <div style={{ padding: 14, overflowY: 'auto', flex: 1 }}>
-        {!signal ? (
-          <Empty />
-        ) : (
-          <Body signal={signal} threshold={threshold} state={state} openOp={openOperation} />
-        )}
-      </div>
-    </div>
-  );
-}
+const openOpStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: 16,
+};
 
-function Empty() {
-  return (
-    <div style={{ color: T.textMute, fontSize: 12, textAlign: 'center', padding: '40px 16px' }}>
-      Aguardando dados de mercado...
-    </div>
-  );
-}
+const statusBadgeStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '5px 10px',
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '0.1em',
+  borderRadius: 6,
+  alignSelf: 'flex-start',
+};
 
-function Body({ signal, threshold, state, openOp }:
-  { signal: Signal; threshold: number; state: BotState; openOp: Operation | null }
-) {
-  const hasDirection = signal.direction !== null;
-  const meetsThreshold = signal.confidence >= threshold;
+const opHeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: 12,
+};
 
-  return (
-    <>
-      {/* Verdicto */}
-      <Verdict signal={signal} />
+const analysisBlockStyle = {
+  background: T.bgElev,
+  border: `1px solid ${T.border}`,
+  borderRadius: 10,
+  padding: 16,
+};
 
-      {/* Confiança vs threshold */}
-      <Confidence value={signal.confidence} threshold={threshold} />
+const confidenceBarBgStyle = {
+  width: '100%',
+  height: 6,
+  background: T.bgElev,
+  borderRadius: 3,
+  overflow: 'hidden' as const,
+  border: `1px solid ${T.border}`,
+};
 
-      {/* Estado / decisão */}
-      <Decision
-        hasDirection={hasDirection}
-        meetsThreshold={meetsThreshold}
-        threshold={threshold}
-        confidence={signal.confidence}
-        state={state}
-        openOp={openOp}
-      />
+const confidenceBarFillStyle = {
+  height: '100%',
+  background: `linear-gradient(90deg, ${T.accentDeep}, ${T.accent}, ${T.accentBright})`,
+  transition: 'width 240ms ease-out',
+  boxShadow: `0 0 8px ${T.accentDim}`,
+};
 
-      {/* Métricas */}
-      <Section title="Indicadores">
-        <Metrics signal={signal} />
-      </Section>
+const signalRowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '6px 0',
+};
 
-      {/* Razões */}
-      <Section title="Fatores avaliados">
-        <Reasons signal={signal} />
-      </Section>
+const countdownBlockStyle = {
+  background: T.bgElev,
+  border: `1px solid ${T.border}`,
+  borderRadius: 10,
+  padding: 16,
+  textAlign: 'center' as const,
+};
 
-      {/* Expiração escolhida */}
-      <Section title="Expiração escolhida pela IA">
-        <ExpirationExplain signal={signal} />
-      </Section>
-    </>
-  );
-}
+const scanningBlockStyle = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column' as const,
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 16,
+};
 
-function Verdict({ signal }: { signal: Signal }) {
-  const color =
-    signal.direction === 'CALL' ? T.long :
-    signal.direction === 'PUT'  ? T.short :
-                                   T.textDim;
-  const icon =
-    signal.direction === 'CALL' ? <TrendingUp size={20} /> :
-    signal.direction === 'PUT'  ? <TrendingDown size={20} /> :
-                                   <Minus size={20} />;
-  const label =
-    signal.direction === 'CALL' ? 'COMPRA (CALL)' :
-    signal.direction === 'PUT'  ? 'VENDA (PUT)'   :
-                                   'NEUTRO';
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '10px 12px',
-      background: color + '14',
-      border: `1px solid ${color}44`,
-      borderRadius: 8,
-      marginBottom: 14,
-    }}>
-      <span style={{ color }}>{icon}</span>
-      <div>
-        <div style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.08em' }}>VEREDICTO</div>
-        <div style={{ fontSize: 14, fontWeight: 700, color, letterSpacing: '0.02em' }}>{label}</div>
-      </div>
-    </div>
-  );
-}
+const radarWrapStyle = {
+  position: 'relative' as const,
+  width: 80,
+  height: 80,
+  display: 'grid',
+  placeItems: 'center',
+};
 
-function Confidence({ value, threshold }: { value: number; threshold: number }) {
-  const pct = Math.min(100, value);
-  const above = value >= threshold;
-  return (
-    <div style={{ marginBottom: 14 }}>
-      <div style={{
-        display: 'flex', justifyContent: 'space-between',
-        fontSize: 11, marginBottom: 6,
-      }}>
-        <span style={{ color: T.textDim, letterSpacing: '0.05em' }}>CONFIANÇA</span>
-        <span style={{
-          color: above ? T.accent : T.textDim,
-          fontWeight: 700,
-          fontFamily: '"JetBrains Mono", monospace',
-        }}>
-          {value.toFixed(0)} / 100
-        </span>
-      </div>
-      <div style={{
-        position: 'relative',
-        height: 8, background: T.panel,
-        borderRadius: 4, overflow: 'hidden',
-      }}>
-        <div style={{
-          width: `${pct}%`, height: '100%',
-          background: above ? T.accent : T.textMute,
-          transition: 'width 200ms ease',
-        }} />
-        {/* Marcador do threshold */}
-        <div style={{
-          position: 'absolute', top: -2, bottom: -2,
-          left: `${threshold}%`, width: 1,
-          background: T.warn,
-        }} />
-      </div>
-      <div style={{
-        marginTop: 4, fontSize: 10, color: T.textMute,
-        display: 'flex', justifyContent: 'space-between',
-      }}>
-        <span>Limite p/ entrar: <b style={{ color: T.warn }}>{threshold}</b></span>
-        <span>{above ? 'ACIMA do limite' : 'abaixo do limite'}</span>
-      </div>
-    </div>
-  );
-}
+const radarRingStyle = {
+  position: 'absolute' as const,
+  inset: 0,
+  borderRadius: '50%',
+  border: `2px solid ${T.accent}`,
+  animation: 'radar-pulse 2s ease-out infinite',
+} as const;
 
-function Decision({
-  hasDirection, meetsThreshold, threshold, confidence, state, openOp,
-}: {
-  hasDirection: boolean; meetsThreshold: boolean; threshold: number;
-  confidence: number; state: BotState; openOp: Operation | null;
-}) {
-  let text = '';
-  let color = T.textDim;
+const radarCenterStyle = {
+  width: 32,
+  height: 32,
+  borderRadius: '50%',
+  background: T.accent,
+  display: 'grid',
+  placeItems: 'center',
+  boxShadow: `0 0 16px ${T.accentDim}`,
+  zIndex: 1,
+};
 
-  if (openOp) {
-    text = `Operação aberta às ${fmtTime(openOp.openedAt)} — aguardando expiração.`;
-    color = T.accent;
-  } else if (state.kind === 'idle' || state.kind === 'stopped') {
-    text = 'Bot inativo. Inicie pelo painel à direita.';
-  } else if (state.kind === 'placing_order') {
-    text = 'Enviando ordem para a corretora...';
-    color = T.accent;
-  } else if (!hasDirection) {
-    text = 'Sem direção clara. Mercado lateral ou indicadores divergentes.';
-  } else if (!meetsThreshold) {
-    text = `Sinal abaixo do limite (${confidence.toFixed(0)} < ${threshold}). Aguardando confirmação.`;
-    color = T.warn;
-  } else {
-    text = 'Pronto para entrar na próxima oportunidade.';
-    color = T.accent;
-  }
+const centeredMessageStyle = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column' as const,
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 24,
+};
 
-  return (
-    <div style={{
-      padding: '10px 12px',
-      background: T.bg,
-      border: `1px solid ${T.border}`,
-      borderRadius: 8,
-      marginBottom: 18,
-      fontSize: 12,
-      color, lineHeight: 1.5,
-      display: 'flex', alignItems: 'flex-start', gap: 8,
-    }}>
-      <Activity size={13} style={{ marginTop: 2, flexShrink: 0 }} />
-      <span>{text}</span>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <h4 style={{
-        margin: '0 0 8px',
-        fontSize: 10, letterSpacing: '0.12em',
-        color: T.textMute, fontWeight: 600,
-      }}>
-        {title.toUpperCase()}
-      </h4>
-      {children}
-    </div>
-  );
-}
-
-function Metrics({ signal }: { signal: Signal }) {
-  const m = signal.metrics;
-  const items: { label: string; value: string }[] = [];
-  if (m.rsi !== undefined)     items.push({ label: 'RSI(14)',  value: m.rsi.toFixed(1) });
-  if (m.emaShort !== undefined) items.push({ label: 'EMA 5',    value: m.emaShort.toFixed(4) });
-  if (m.emaLong !== undefined)  items.push({ label: 'EMA 21',   value: m.emaLong.toFixed(4) });
-  if (m.atr !== undefined)      items.push({ label: 'ATR(14)',  value: m.atr.toFixed(4) });
-  if (m.momentum !== undefined) items.push({ label: 'Momentum', value: m.momentum.toFixed(4) });
-
-  if (items.length === 0) {
-    return <div style={{ color: T.textMute, fontSize: 11 }}>—</div>;
-  }
-
-  return (
-    <div style={{
-      display: 'grid', gridTemplateColumns: '1fr 1fr',
-      gap: 6,
-      fontFamily: '"JetBrains Mono", monospace', fontSize: 11,
-    }}>
-      {items.map(i => (
-        <div key={i.label} style={{
-          display: 'flex', justifyContent: 'space-between',
-          padding: '4px 8px',
-          background: T.panel,
-          borderRadius: 4,
-        }}>
-          <span style={{ color: T.textMute }}>{i.label}</span>
-          <span style={{ color: T.text }}>{i.value}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function Reasons({ signal }: { signal: Signal }) {
-  if (signal.reasons.length === 0) {
-    return <div style={{ color: T.textMute, fontSize: 11 }}>—</div>;
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {signal.reasons.map((r, i) => {
-        const color =
-          r.side === 'CALL'    ? T.long :
-          r.side === 'PUT'     ? T.short :
-                                  T.textMute;
-        return (
-          <div key={i} style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            fontSize: 11,
-            padding: '6px 8px',
-            background: r.weight > 0 ? color + '0F' : 'transparent',
-            border: `1px solid ${r.weight > 0 ? color + '33' : T.border}`,
-            borderRadius: 6,
-          }}>
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%',
-              background: color, flexShrink: 0,
-            }} />
-            <span style={{ flex: 1, color: T.text }}>{r.label}</span>
-            {r.weight > 0 && (
-              <span style={{
-                color: T.textMute, fontSize: 10,
-                fontFamily: '"JetBrains Mono", monospace',
-              }}>
-                +{(r.weight * 100).toFixed(0)}
-              </span>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ExpirationExplain({ signal }: { signal: Signal }) {
-  const atr = signal.metrics.atr;
-  const ema = signal.metrics.emaLong;
-  const volPct = atr && ema ? (atr / ema) * 100 : null;
-
-  const label =
-    signal.expiration === 5  ? 'alta volatilidade' :
-    signal.expiration === 10 ? 'volatilidade moderada' :
-                                'baixa volatilidade';
-
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '10px 12px',
-      background: T.panel,
-      border: `1px solid ${T.border}`,
-      borderRadius: 6,
-    }}>
-      <div style={{
-        fontSize: 22, fontWeight: 800,
-        color: T.accent, fontFamily: '"JetBrains Mono", monospace',
-      }}>
-        {signal.expiration}s
-      </div>
-      <div style={{ flex: 1, fontSize: 11, color: T.textDim, lineHeight: 1.5 }}>
-        Mercado em <b style={{ color: T.text }}>{label}</b>
-        {volPct !== null && <> (ATR ≈ {volPct.toFixed(2)}% do preço)</>}.
-      </div>
-    </div>
-  );
-}
-
-function fmtTime(epoch: number): string {
-  const d = new Date(epoch);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
+const iconWrapLargeStyle = {
+  width: 48,
+  height: 48,
+  borderRadius: 12,
+  display: 'grid',
+  placeItems: 'center',
+} as const;
