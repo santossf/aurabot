@@ -365,7 +365,6 @@ function adaptCandle(c: any): Candle {
     high:   c.max ?? c.high ?? 0,
     low:    c.min ?? c.low ?? 0,
     close:  c.close ?? 0,
-    volume: c.volume ?? 0,
   };
 }
 
