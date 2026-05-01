@@ -1,464 +1,890 @@
 /**
- * ============================================================================
- * BOT SCREEN — versão reformulada com IA, histórico de operações e relatório
- * ----------------------------------------------------------------------------
- * Layout (desktop):
- *   ┌──────────────────────────────────────────────────────────────────────┐
- *   │ Header: ativo + ticker + stats                                        │
- *   ├─────────────────────────┬──────────┬──────────────┬──────────────────┤
- *   │                         │  Lista   │              │                  │
- *   │       GRÁFICO           │   de     │  Controle    │                  │
- *   │       (1m candles)      │ ativos   │   do Bot     │                  │
- *   │                         │          │              │                  │
- *   ├─────────────────────────┴──────────┤  + StopLoss  │   Relatório de   │
- *   │   ÚLTIMAS OPERAÇÕES (tabela)       │     Card     │   Inteligência   │
- *   │                                    │              │                  │
- *   └────────────────────────────────────┴──────────────┴──────────────────┘
- * ============================================================================
+ * BotScreen — tela do bot de scalping.
+ *
+ * Layout:
+ *   Topbar (voltar, ativo, banca)
+ *   ┌──────────────────────────────┬─────────────────────┐
+ *   │                              │                     │
+ *   │  Gráfico (lightweight-charts)│  IntelligenceReport │
+ *   │  + ScannerOverlay quando ana │                     │
+ *   │                              │                     │
+ *   ├──────────────────────────────┤                     │
+ *   │  OperationsLog                                      │
+ *   └─────────────────────────────────────────────────────┘
+ *   + Controles do bot (sidebar direita ou modal)
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientSdk } from '@quadcode-tech/client-sdk-js';
-import { ArrowLeft, Bot, Play, Square, Sparkles, Wallet } from 'lucide-react';
+import { ArrowLeft, Wallet, Play, Square, ChevronDown } from 'lucide-react';
 
-import { useBot } from '../hooks/useBot';
-import type { Profile } from '../lib/ai/engine';
-import { StopLossCard } from '../components/StopLossCard';
-import { OperationsLog } from '../components/OperationsLog';
+import { theme as T } from '../lib/theme';
+import { Chart, type ChartMarker } from '../components/Chart';
+import { ScannerOverlay } from '../components/ScannerOverlay';
 import { IntelligenceReport } from '../components/IntelligenceReport';
-import { StopLossModal } from '../components/StopLossModal';
+import { OperationsLog } from '../components/OperationsLog';
+import { StopLossCard } from '../components/StopLossCard';
 
-const T = {
-  bg: '#0A0E14', bgElev: '#0F141C', panel: '#121821', panelHi: '#171E29',
-  border: '#1F2733', text: '#E6EDF3', textDim: '#8B97A8', textMute: '#5C677A',
-  accent: '#00E0B8', accentDim: '#00E0B833',
-  long: '#26D782', warn: '#F5A524', short: '#F0506E',
-};
+import { useChartCandles } from '../hooks/useChartCandles';
+import { useAvailableActives } from '../hooks/useAvailableActives';
+import { useBalances } from '../hooks/useBalances';
 
-interface Props {
-  sdk: ClientSdk | null;
+import { BotEngine, type BotConfig } from '../lib/bot/engine';
+import type {
+  Operation,
+  BotState,
+  SequenceState,
+  SessionStats,
+  TakeProfitConfig,
+  TakeProfitMode,
+} from '../lib/bot/types';
+import type { Profile, Signal } from '../lib/ai/engine';
+import {
+  buildConfig,
+  suggestProfileForBalance,
+} from '../lib/profile-suggester';
+
+interface BotScreenProps {
+  sdk: ClientSdk;
   onBack: () => void;
 }
 
-export function BotScreen({ sdk, onBack }: Props) {
-  // ── Seleção de ativo ────────────────────────────────────────────────────
-  // TODO: substituir por sdk.actives() / blitzOptions.getActives()
-  // Por ora, hardcoded para mockar a UI.
-  const [activeId, setActiveId] = useState(1);
-  const [assetSymbol, setAssetSymbol] = useState('EURUSD');
+export function BotScreen({ sdk, onBack }: BotScreenProps) {
+  const { actives, loading: activesLoading } = useAvailableActives(sdk);
+  const { balances, selected: selectedBalance, selectKind } = useBalances(sdk);
 
-  // ── Banca ──────────────────────────────────────────────────────────────
-  // TODO: pegar de sdk.balances().getBalances() — usar real ou demo
-  const balanceId = 0;
-  const balance = 1250;
+  const [activeId, setActiveId] = useState<number | null>(null);
+  useEffect(() => {
+    // Seleciona o primeiro ativo disponível (não suspenso) ao carregar
+    if (!activeId && actives.length > 0) {
+      const first = actives.find(a => !a.isSuspended) ?? actives[0];
+      if (first) setActiveId(first.id);
+    }
+  }, [actives, activeId]);
 
-  // ── Configuração do bot ────────────────────────────────────────────────
-  const [profile, setProfile] = useState<Profile>('moderado');
-  const [config, setConfig] = useState({
-    profile,
-    entryValue: 31.25,    // 2.5% da banca
-    takeProfit: 0.8,
-    maxGales: 2,
-    multiplier: 2.2,
-  });
+  const activeInfo = activeId ? actives.find(a => a.id === activeId) : null;
 
-  // sincroniza profile na config
-  useEffect(() => { setConfig(c => ({ ...c, profile })); }, [profile]);
+  // Candles do gráfico
+  const { candles, lastCandle, loading: chartLoading } = useChartCandles(sdk, activeId, 1);
 
-  // ── Bot engine ─────────────────────────────────────────────────────────
-  const { state, signal, operations, sequence, actions } = useBot({
-    sdk, activeId, assetSymbol, balanceId, balance,
-    config,
-    dryRun: !sdk, // se SDK não disponível, simula
-  });
+  // Estado do bot
+  const [botState, setBotState] = useState<BotState>({ kind: 'idle' });
+  const [signal, setSignal] = useState<Signal | null>(null);
+  const [operations, setOperations] = useState<Operation[]>([]);
+  const [, setSequence] = useState<SequenceState>({ operations: [], lossesInRow: 0, accumulatedLoss: 0 });
+  const [, setSession] = useState<SessionStats>({ greensCount: 0, totalPnl: 0, startBalance: 0 });
 
-  const isRunning = state.kind !== 'idle' && state.kind !== 'stopped';
-  const stopLossHit = state.kind === 'stopped' && state.reason === 'stop_loss_hit';
+  const engineRef = useRef<BotEngine | null>(null);
 
-  const openOp = useMemo(
-    () => operations.find(o => o.status === 'open' || o.status === 'pending') ?? null,
-    [operations],
+  // Configuração — começa com sugestão da IA baseada na banca
+  const balanceAmount = selectedBalance?.amount ?? 0;
+  const suggested = useMemo(
+    () => buildConfig(suggestProfileForBalance(balanceAmount), balanceAmount || 1000),
+    [balanceAmount],
   );
 
+  const [profile, setProfile] = useState<Profile>(suggested.profile);
+  const [entryValue, setEntryValue] = useState<number>(suggested.entryAmount);
+  const [maxLosses, setMaxLosses] = useState<number>(suggested.maxConsecutiveLosses);
+  const [multiplier, setMultiplier] = useState<number>(suggested.lossMultiplier);
+  const [tpMode, setTpMode] = useState<TakeProfitMode>('absolute');
+  const [tpValue, setTpValue] = useState<number>(suggested.takeProfit);
+
+  // Quando a banca muda, atualiza sugestão (mas só se usuário ainda não personalizou)
+  const userTouchedRef = useRef(false);
+  useEffect(() => {
+    if (userTouchedRef.current) return;
+    setProfile(suggested.profile);
+    setEntryValue(suggested.entryAmount);
+    setMaxLosses(suggested.maxConsecutiveLosses);
+    setMultiplier(suggested.lossMultiplier);
+    setTpValue(suggested.takeProfit);
+  }, [suggested]);
+
+  // Quando muda perfil manualmente, recalcula valores sugeridos pra esse perfil
+  const onProfileChange = (newProfile: Profile) => {
+    userTouchedRef.current = true;
+    setProfile(newProfile);
+    if (balanceAmount > 0) {
+      const cfg = buildConfig(newProfile, balanceAmount);
+      setEntryValue(cfg.entryAmount);
+      setMaxLosses(cfg.maxConsecutiveLosses);
+      setMultiplier(cfg.lossMultiplier);
+      setTpValue(cfg.takeProfit);
+    }
+  };
+
+  // Markers do gráfico (entradas do bot)
+  const markers: ChartMarker[] = useMemo(() => operations.map(op => ({
+    time: Math.floor(op.openedAt / 1000),
+    position: op.direction === 'CALL' ? 'belowBar' : 'aboveBar',
+    side: op.direction === 'CALL' ? 'long' : 'short',
+    text: `${op.direction === 'CALL' ? '↑' : '↓'} $${op.amount.toFixed(0)}`,
+  })), [operations]);
+
+  // Operação ativa atualmente (para painel da direita)
+  const activeOperation = useMemo(() => {
+    return operations.find(o =>
+      o.status === 'analyzing' || o.status === 'pending' ||
+      o.status === 'open' || o.status === 'expiring',
+    ) ?? null;
+  }, [operations]);
+
+  // Stop loss calculado (consequência matemática)
+  const stopLossAmount = useMemo(() => {
+    let total = 0;
+    for (let i = 0; i <= maxLosses; i++) {
+      total += entryValue * Math.pow(multiplier, i);
+    }
+    return total;
+  }, [entryValue, maxLosses, multiplier]);
+
+  const stopLossPercent = balanceAmount > 0 ? (stopLossAmount / balanceAmount) * 100 : 0;
+
+  // Iniciar/parar bot
+  const handleStart = () => {
+    if (!activeId || !activeInfo || !selectedBalance) return;
+
+    const config: BotConfig = {
+      profile,
+      entryValue,
+      maxConsecutiveLosses: maxLosses,
+      multiplier,
+      takeProfit: { mode: tpMode, value: tpValue },
+    };
+
+    const tpConfig: TakeProfitConfig = config.takeProfit;
+    void tpConfig;
+
+    const engine = new BotEngine(
+      {
+        sdk,
+        activeId,
+        assetSymbol: activeInfo.ticker,
+        config,
+        balanceId: selectedBalance.id,
+        balance: selectedBalance.amount,
+      },
+      {
+        onStateChange: setBotState,
+        onSignalUpdate: setSignal,
+        onOperationCreate: (op) => setOperations(prev => [...prev, op]),
+        onOperationUpdate: (op) => setOperations(prev => prev.map(p => p.id === op.id ? op : p)),
+        onSequenceUpdate: setSequence,
+        onSessionUpdate: setSession,
+        onError: (err) => console.error('[bot]', err),
+      },
+    );
+
+    engineRef.current = engine;
+    engine.start().catch(err => console.error('[bot] start falhou:', err));
+  };
+
+  const handleStop = () => {
+    engineRef.current?.stop('manual');
+  };
+
+  const handleReset = () => {
+    engineRef.current?.acknowledgeStopAndReset();
+  };
+
+  const isRunning =
+    botState.kind === 'analyzing' ||
+    botState.kind === 'waiting_signal' ||
+    botState.kind === 'placing_order' ||
+    botState.kind === 'in_position';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: T.bg }}>
-      {/* ── Topbar ──────────────────────────────────────────────────────── */}
-      <Topbar onBack={onBack} assetSymbol={assetSymbol} balance={balance} />
+    <div style={pageStyle}>
+      <style>{`
+        @keyframes pulse {
+          0%   { opacity: 0.4; }
+          50%  { opacity: 1; }
+          100% { opacity: 0.4; }
+        }
+      `}</style>
 
-      {/* ── Main grid ───────────────────────────────────────────────────── */}
-      <main style={{
-        flex: 1,
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1fr) 360px 320px',
-        gridTemplateRows: 'minmax(0, 1.4fr) minmax(0, 1fr)',
-        minHeight: 0,
-      }}>
-        {/* Coluna 1, linha 1: Gráfico */}
-        <ChartArea
-          assetSymbol={assetSymbol}
-          activeId={activeId}
-          state={state}
-          signal={signal}
+      {/* Topbar */}
+      <header style={topbarStyle}>
+        <button onClick={onBack} style={backButtonStyle}>
+          <ArrowLeft size={16} />
+          <span>Voltar</span>
+        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 1, marginLeft: 24 }}>
+          <AssetSelector
+            actives={actives}
+            activeId={activeId}
+            onSelect={setActiveId}
+            loading={activesLoading}
+          />
+        </div>
+
+        <BalancePill
+          balance={selectedBalance}
+          onToggle={() => {
+            if (!selectedBalance) return;
+            selectKind(selectedBalance.kind === 'real' ? 'demo' : 'real');
+          }}
+          hasBoth={balances.some(b => b.kind === 'real') && balances.some(b => b.kind === 'demo')}
         />
+      </header>
 
-        {/* Coluna 1, linha 2: Operações */}
-        <div style={{ gridColumn: '1', gridRow: '2' }}>
+      {/* Layout principal */}
+      <div style={mainGridStyle}>
+        {/* Coluna esquerda: gráfico + log */}
+        <div style={leftColStyle}>
+          <div style={chartWrapStyle}>
+            <BotStatusPill state={botState} isRunning={isRunning} />
+            <Chart
+              candles={candles}
+              lastCandle={lastCandle}
+              markers={markers}
+              loading={chartLoading}
+            />
+            <ScannerOverlay active={isRunning && !activeOperation} />
+          </div>
+
           <OperationsLog operations={operations} />
         </div>
 
-        {/* Coluna 2, linhas 1-2: Controle do bot */}
-        <div style={{
-          gridColumn: '2', gridRow: '1 / span 2',
-          background: T.bgElev,
-          borderLeft: `1px solid ${T.border}`,
-          overflowY: 'auto',
-        }}>
-          <BotControl
-            profile={profile}
-            setProfile={setProfile}
-            config={config}
-            setConfig={setConfig}
-            balance={balance}
-            isRunning={isRunning}
-            onStart={actions.start}
-            onStop={actions.stop}
+        {/* Coluna do meio: controles do bot */}
+        <div style={controlsColStyle}>
+          <div style={panelTitleStyle}>CONTROLE DO BOT</div>
+
+          <StopLossCard
+            stopLoss={stopLossAmount}
+            balance={balanceAmount}
+            stopLossPercent={stopLossPercent}
+            losses={maxLosses + 1}
+            multiplier={multiplier}
+            entry={entryValue}
           />
+
+          {/* Perfil */}
+          <div style={fieldGroupStyle}>
+            <label style={labelStyle}>Perfil de Risco</label>
+            <div style={profileButtonsStyle}>
+              {(['conservador', 'moderado', 'ousado'] as Profile[]).map(p => (
+                <button
+                  key={p}
+                  onClick={() => onProfileChange(p)}
+                  style={{
+                    ...profileButtonStyle,
+                    ...(profile === p ? profileButtonActiveStyle : null),
+                  }}
+                >
+                  {p[0].toUpperCase() + p.slice(1)}
+                </button>
+              ))}
+            </div>
+            {profile === suggested.profile && (
+              <div style={hintStyle}>
+                ✨ Sugerido pela IA com base na sua banca
+              </div>
+            )}
+          </div>
+
+          {/* Valor de entrada */}
+          <NumberField
+            label="Valor de entrada"
+            value={entryValue}
+            unit="$"
+            onChange={(v) => { userTouchedRef.current = true; setEntryValue(v); }}
+            step={0.5}
+            min={0}
+          />
+
+          {/* Quantidade máxima de perdas consecutivas */}
+          <NumberField
+            label="Quantidade máxima de perdas consecutivas"
+            value={maxLosses}
+            onChange={(v) => { userTouchedRef.current = true; setMaxLosses(Math.max(0, Math.floor(v))); }}
+            step={1}
+            min={0}
+          />
+
+          {/* Multiplicador */}
+          <NumberField
+            label="Multiplicador pós loss"
+            value={multiplier}
+            unit="x"
+            onChange={(v) => { userTouchedRef.current = true; setMultiplier(Math.max(1, v)); }}
+            step={0.1}
+            min={1}
+            decimals={1}
+          />
+
+          {/* Take Profit */}
+          <div style={fieldGroupStyle}>
+            <label style={labelStyle}>Take Profit</label>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              {([
+                { mode: 'absolute', label: '$' },
+                { mode: 'percent',  label: '%' },
+                { mode: 'greens',   label: 'WINS' },
+              ] as { mode: TakeProfitMode; label: string }[]).map(opt => (
+                <button
+                  key={opt.mode}
+                  onClick={() => { userTouchedRef.current = true; setTpMode(opt.mode); }}
+                  style={{
+                    ...tpModeButtonStyle,
+                    ...(tpMode === opt.mode ? tpModeButtonActiveStyle : null),
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <NumberField
+              label=""
+              value={tpValue}
+              unit={tpMode === 'absolute' ? '$' : tpMode === 'percent' ? '%' : 'wins'}
+              onChange={(v) => { userTouchedRef.current = true; setTpValue(Math.max(0, v)); }}
+              step={tpMode === 'greens' ? 1 : 1}
+              min={0}
+              decimals={tpMode === 'greens' ? 0 : 2}
+            />
+            <div style={hintStyle}>
+              ✨ Sugerido: {tpMode === 'absolute' ? `$${suggested.takeProfit.toFixed(2)}` :
+                            tpMode === 'percent'  ? `${suggested.takeProfitPercent.toFixed(1)}%` :
+                                                    '5 wins'}
+            </div>
+          </div>
+
+          {/* Botões de ação */}
+          {botState.kind === 'stopped' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+              <div style={{
+                padding: '10px 12px',
+                background: botState.reason === 'take_profit_hit' ? T.longSoft : T.shortSoft,
+                color: botState.reason === 'take_profit_hit' ? T.long : T.short,
+                borderRadius: 8,
+                fontSize: 12,
+                fontWeight: 600,
+                textAlign: 'center',
+              }}>
+                {botState.reason === 'take_profit_hit' ? '🎯 Meta atingida' : '⚠️ Bot parado'}
+                {botState.detail && (
+                  <div style={{ fontSize: 11, fontWeight: 400, marginTop: 2, opacity: 0.8 }}>
+                    {botState.detail}
+                  </div>
+                )}
+              </div>
+              <button onClick={handleReset} style={primaryButtonStyle}>
+                <Play size={14} fill={T.bg} />
+                REINICIAR BOT
+              </button>
+            </div>
+          ) : isRunning ? (
+            <button onClick={handleStop} style={dangerButtonStyle}>
+              <Square size={14} fill={T.text} />
+              PARAR BOT
+            </button>
+          ) : (
+            <button
+              onClick={handleStart}
+              disabled={!activeId || !selectedBalance}
+              style={{
+                ...primaryButtonStyle,
+                opacity: (!activeId || !selectedBalance) ? 0.5 : 1,
+                cursor: (!activeId || !selectedBalance) ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <Play size={14} fill={T.bg} />
+              INICIAR OPERAÇÕES
+            </button>
+          )}
         </div>
 
-        {/* Coluna 3, linhas 1-2: Relatório de Inteligência */}
-        <div style={{ gridColumn: '3', gridRow: '1 / span 2' }}>
+        {/* Coluna direita: relatório de inteligência */}
+        <div style={reportColStyle}>
           <IntelligenceReport
-            liveSignal={signal}
-            openOperation={openOp}
-            state={state}
-            profile={profile}
+            state={botState}
+            signal={signal}
+            activeOperation={activeOperation}
           />
         </div>
-      </main>
-
-      {/* Modal de stop loss */}
-      <StopLossModal
-        open={stopLossHit}
-        detail={state.kind === 'stopped' ? state.detail : undefined}
-        accumulatedLoss={sequence.accumulatedLoss}
-        onConfirm={() => { actions.acknowledgeStopAndReset(); actions.start(); }}
-        onDismiss={actions.acknowledgeStopAndReset}
-      />
+      </div>
     </div>
   );
 }
 
-// ─── Subcomponentes ────────────────────────────────────────────────────────
+/* ============================================================
+ * Componentes auxiliares
+ * ============================================================ */
 
-function Topbar({ onBack, assetSymbol, balance }:
-  { onBack: () => void; assetSymbol: string; balance: number }
-) {
-  return (
-    <header style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      padding: '12px 20px',
-      borderBottom: `1px solid ${T.border}`,
-      background: T.bgElev,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <button onClick={onBack} style={{
-          all: 'unset', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 6,
-          color: T.textDim, fontSize: 13,
-          padding: '6px 10px',
-          borderRadius: 6,
-        }}>
-          <ArrowLeft size={14} /> Voltar
-        </button>
-        <div style={{ height: 20, width: 1, background: T.border }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: 7,
-            background: `linear-gradient(135deg, ${T.accent}, ${T.accent}66)`,
-            display: 'grid', placeItems: 'center',
-            boxShadow: `0 0 14px ${T.accentDim}`,
-          }}>
-            <Bot size={14} color={T.bg} strokeWidth={2.5} />
-          </div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{assetSymbol}</div>
-            <div style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.08em' }}>BLITZ OPTIONS</div>
-          </div>
-        </div>
-      </div>
+function BotStatusPill({ state, isRunning }: { state: BotState; isRunning: boolean }) {
+  const label =
+    state.kind === 'idle'           ? 'BOT INATIVO' :
+    state.kind === 'analyzing'      ? 'ANALISANDO' :
+    state.kind === 'waiting_signal' ? 'AGUARDANDO SINAL' :
+    state.kind === 'placing_order'  ? 'ENVIANDO ORDEM' :
+    state.kind === 'in_position'    ? 'EM POSIÇÃO' :
+    state.kind === 'stopped'        ? (state.reason === 'take_profit_hit' ? 'META BATIDA' : 'PARADO') :
+                                       'BOT';
 
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '6px 12px',
-        background: T.panel,
-        border: `1px solid ${T.border}`,
-        borderRadius: 8,
-        fontSize: 12,
-      }}>
-        <Wallet size={13} color={T.textDim} />
-        <span style={{ color: T.textDim }}>Banca</span>
-        <span style={{ fontWeight: 700, color: T.accent, fontFamily: '"JetBrains Mono", monospace' }}>
-          $ {balance.toFixed(2)}
-        </span>
-      </div>
-    </header>
-  );
-}
+  const color = isRunning ? T.accent : state.kind === 'stopped' ? T.short : T.textMute;
 
-function ChartArea({ assetSymbol, activeId, state, signal }: any) {
-  // Placeholder do gráfico — em produção, plugar o componente Chart
-  // (que usa lightweight-charts + sdk.realTimeChartDataLayer).
   return (
     <div style={{
-      gridColumn: '1', gridRow: '1',
-      background: T.bg,
-      display: 'grid', placeItems: 'center',
-      color: T.textMute,
-      borderRight: `1px solid ${T.border}`,
-      position: 'relative',
+      position: 'absolute',
+      top: 16,
+      left: 16,
+      zIndex: 10,
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '6px 12px',
+      background: T.bgElev + 'E0',
+      backdropFilter: 'blur(8px)',
+      border: `1px solid ${T.border}`,
+      borderRadius: 8,
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: '0.08em',
+      color,
     }}>
-      <div style={{ textAlign: 'center', fontSize: 12 }}>
-        [ Gráfico de candles 1s ]
-        <div style={{ marginTop: 8, fontSize: 10 }}>
-          Plugar &lt;Chart activeId={activeId} candleSize={1} /&gt; aqui
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%',
+        background: color,
+        marginRight: 8,
+        boxShadow: isRunning ? `0 0 8px ${color}` : 'none',
+        animation: isRunning ? 'pulse 1.4s ease-in-out infinite' : 'none',
+      }} />
+      {label}
+    </div>
+  );
+}
+
+function AssetSelector({
+  actives, activeId, onSelect, loading,
+}: {
+  actives: ReturnType<typeof useAvailableActives>['actives'];
+  activeId: number | null;
+  onSelect: (id: number) => void;
+  loading: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = actives.find(a => a.id === activeId);
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        disabled={loading}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '8px 14px',
+          background: T.bgElev,
+          border: `1px solid ${T.border}`,
+          borderRadius: 10,
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+        }}
+      >
+        <div style={{
+          width: 32, height: 32, borderRadius: 8,
+          background: `linear-gradient(135deg, ${T.accent}, ${T.accentDeep})`,
+          display: 'grid', placeItems: 'center',
+          color: T.bg,
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: '-0.02em',
+        }}>
+          {current?.ticker.slice(0, 3) ?? '...'}
+        </div>
+        <div style={{ textAlign: 'left' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>
+            {current?.ticker ?? (loading ? 'Carregando...' : 'Selecionar ativo')}
+          </div>
+          <div style={{ fontSize: 10, color: T.textMute, letterSpacing: '0.06em' }}>
+            BLITZ OPTIONS {current ? `· ${current.incomePercent}%` : ''}
+          </div>
+        </div>
+        <ChevronDown size={14} color={T.textDim} style={{
+          transform: open ? 'rotate(180deg)' : 'none',
+          transition: 'transform 200ms',
+        }} />
+      </button>
+
+      {open && (
+        <div style={dropdownStyle}>
+          {actives.map(a => (
+            <button
+              key={a.id}
+              disabled={a.isSuspended}
+              onClick={() => { onSelect(a.id); setOpen(false); }}
+              style={{
+                ...dropdownItemStyle,
+                opacity: a.isSuspended ? 0.4 : 1,
+                cursor: a.isSuspended ? 'not-allowed' : 'pointer',
+                background: a.id === activeId ? T.accentSoft : 'transparent',
+              }}
+            >
+              <span style={{ fontWeight: 600, color: T.text }}>{a.ticker}</span>
+              <span style={{ fontSize: 10, color: T.textMute }}>
+                {a.isSuspended ? 'SUSPENSO' : `${a.incomePercent}%`}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BalancePill({
+  balance, onToggle, hasBoth,
+}: {
+  balance: ReturnType<typeof useBalances>['selected'];
+  onToggle: () => void;
+  hasBoth: boolean;
+}) {
+  if (!balance) return null;
+
+  return (
+    <button
+      onClick={onToggle}
+      disabled={!hasBoth}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 14px',
+        background: T.bgElev,
+        border: `1px solid ${T.border}`,
+        borderRadius: 10,
+        cursor: hasBoth ? 'pointer' : 'default',
+        fontFamily: 'inherit',
+      }}
+    >
+      <Wallet size={14} color={T.textDim} />
+      <div style={{ textAlign: 'left' }}>
+        <div style={{ fontSize: 9, color: T.textMute, letterSpacing: '0.1em' }}>
+          {balance.kind.toUpperCase()}
+        </div>
+        <div style={{
+          fontSize: 14,
+          fontWeight: 700,
+          color: T.text,
+          fontFamily: 'JetBrains Mono, monospace',
+        }}>
+          ${balance.amount.toFixed(2)}
         </div>
       </div>
-
-      {/* Overlay de status do bot */}
-      <div style={{
-        position: 'absolute', top: 14, left: 14,
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 10px',
-        background: T.bgElev + 'CC',
-        backdropFilter: 'blur(6px)',
-        border: `1px solid ${T.border}`,
-        borderRadius: 6,
-        fontSize: 11,
-        color: T.textDim,
-        letterSpacing: '0.05em',
-      }}>
-        <BotStatusDot state={state} />
-        {labelForState(state, signal)}
-      </div>
-    </div>
-  );
-}
-
-function BotStatusDot({ state }: { state: any }) {
-  const color =
-    state.kind === 'idle'         ? T.textMute :
-    state.kind === 'stopped'      ? T.short :
-    state.kind === 'in_position'  ? T.warn :
-                                     T.accent;
-  const animated = state.kind !== 'idle' && state.kind !== 'stopped';
-  return (
-    <span style={{ position: 'relative', width: 8, height: 8 }}>
-      {animated && (
-        <span style={{
-          position: 'absolute', inset: -3,
-          background: color, borderRadius: '50%',
-          opacity: 0.4,
-          animation: 'pulse 1.6s infinite',
-        }} />
-      )}
-      <span style={{
-        position: 'absolute', inset: 0,
-        background: color, borderRadius: '50%',
-      }} />
-    </span>
-  );
-}
-
-function labelForState(state: any, signal: any): string {
-  switch (state.kind) {
-    case 'idle':           return 'BOT INATIVO';
-    case 'analyzing':      return 'ANALISANDO MERCADO';
-    case 'waiting_signal': return `AGUARDANDO SINAL (${state.lastConfidence?.toFixed(0) ?? 0})`;
-    case 'placing_order':  return 'ENVIANDO ORDEM';
-    case 'in_position':    return 'OPERAÇÃO EM CURSO';
-    case 'stopped':        return state.reason === 'stop_loss_hit' ? 'STOP LOSS ATINGIDO' : 'BOT PARADO';
-    default:               return '';
-  }
-}
-
-// ─── Painel de controle do bot (versão refatorada) ─────────────────────────
-
-interface BotControlProps {
-  profile: Profile;
-  setProfile: (p: Profile) => void;
-  config: any;
-  setConfig: (c: any) => void;
-  balance: number;
-  isRunning: boolean;
-  onStart: () => void;
-  onStop: () => void;
-}
-
-function BotControl({
-  profile, setProfile, config, setConfig, balance, isRunning, onStart, onStop,
-}: BotControlProps) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-      <div style={{
-        padding: '14px 16px',
-        borderBottom: `1px solid ${T.border}`,
-      }}>
-        <h3 style={{
-          margin: 0, fontSize: 11, letterSpacing: '0.12em',
-          color: T.textDim, fontWeight: 600,
-        }}>
-          CONTROLE DO BOT
-        </h3>
-      </div>
-
-      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 18 }}>
-        {/* Stop loss em destaque (PRIMEIRO ITEM, intencionalmente) */}
-        <StopLossCard
-          entryValue={config.entryValue}
-          multiplier={config.multiplier}
-          maxGales={config.maxGales}
-          balance={balance}
-        />
-
-        {/* Perfil */}
-        <FieldGroup label="Perfil de Risco">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-            {(['conservador', 'moderado', 'ousado'] as Profile[]).map(p => (
-              <button
-                key={p}
-                onClick={() => setProfile(p)}
-                disabled={isRunning}
-                style={{
-                  all: 'unset',
-                  cursor: isRunning ? 'not-allowed' : 'pointer',
-                  textAlign: 'center',
-                  padding: '8px 4px',
-                  borderRadius: 6,
-                  fontSize: 11, fontWeight: 600,
-                  textTransform: 'capitalize',
-                  background: profile === p ? T.accent + '14' : T.panel,
-                  border: `1px solid ${profile === p ? T.accent + '55' : T.border}`,
-                  color: profile === p ? T.accent : T.textDim,
-                  opacity: isRunning ? 0.5 : 1,
-                }}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        </FieldGroup>
-
-        {/* Campos numéricos */}
-        <FieldGroup label="Valor de entrada">
-          <NumberField
-            value={config.entryValue}
-            onChange={v => setConfig({ ...config, entryValue: v })}
-            unit="$" step={0.5}
-            disabled={isRunning}
-          />
-        </FieldGroup>
-
-        <FieldGroup label="Quantidade máxima de gales">
-          <NumberField
-            value={config.maxGales}
-            onChange={v => setConfig({ ...config, maxGales: Math.max(0, Math.round(v)) })}
-            unit="" step={1}
-            disabled={isRunning}
-            integer
-          />
-        </FieldGroup>
-
-        <FieldGroup label="Multiplicador pós loss">
-          <NumberField
-            value={config.multiplier}
-            onChange={v => setConfig({ ...config, multiplier: Math.max(1, v) })}
-            unit="x" step={0.1}
-            disabled={isRunning}
-          />
-        </FieldGroup>
-      </div>
-
-      {/* CTA */}
-      <div style={{ marginTop: 'auto', padding: 16 }}>
-        <button
-          onClick={isRunning ? onStop : onStart}
-          style={{
-            all: 'unset', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            width: '100%', boxSizing: 'border-box',
-            padding: '14px 0', textAlign: 'center',
-            background: isRunning ? T.short : `linear-gradient(135deg, ${T.accent}, ${T.long})`,
-            color: T.bg,
-            fontWeight: 700, letterSpacing: '0.05em', fontSize: 12,
-            borderRadius: 10,
-            boxShadow: isRunning ? `0 0 24px ${T.short}55` : `0 0 24px ${T.accentDim}`,
-          }}
-        >
-          {isRunning
-            ? <><Square size={13} fill={T.bg} /> PARAR BOT</>
-            : <><Play size={13} fill={T.bg} /> INICIAR OPERAÇÕES</>
-          }
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label style={{
-        display: 'block', fontSize: 11, color: T.textDim,
-        marginBottom: 6, letterSpacing: '0.02em',
-      }}>{label}</label>
-      {children}
-    </div>
+    </button>
   );
 }
 
 function NumberField({
-  value, onChange, unit, step, disabled, integer,
+  label, value, unit, onChange, step, min, decimals,
 }: {
-  value: number; onChange: (v: number) => void; unit: string; step: number;
-  disabled?: boolean; integer?: boolean;
+  label: string;
+  value: number;
+  unit?: string;
+  onChange: (v: number) => void;
+  step: number;
+  min?: number;
+  decimals?: number;
 }) {
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center',
-      background: T.panel,
-      border: `1px solid ${T.border}`,
-      borderRadius: 8,
-      padding: '0 4px 0 12px',
-      opacity: disabled ? 0.5 : 1,
-    }}>
-      <input
-        type="number"
-        value={integer ? Math.round(value) : value}
-        onChange={e => onChange(parseFloat(e.target.value) || 0)}
-        disabled={disabled}
-        step={step}
-        style={{
-          flex: 1,
-          background: 'transparent', border: 'none', outline: 'none',
-          color: T.text, fontSize: 14, fontWeight: 600,
-          fontFamily: '"JetBrains Mono", monospace',
-          padding: '10px 0', width: '100%', minWidth: 0,
-        }}
-      />
-      {unit && <span style={{ color: T.textMute, fontSize: 11, marginRight: 8 }}>{unit}</span>}
-      <div style={{ display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${T.border}` }}>
-        <button onClick={() => onChange(value + step)} disabled={disabled} style={stepBtn(true)}>+</button>
-        <button onClick={() => onChange(Math.max(0, value - step))} disabled={disabled} style={stepBtn(false)}>−</button>
+    <div style={fieldGroupStyle}>
+      {label && <label style={labelStyle}>{label}</label>}
+      <div style={numberInputWrapStyle}>
+        <input
+          type="number"
+          value={value}
+          step={step}
+          min={min}
+          onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+          style={numberInputStyle}
+        />
+        {unit && <span style={unitStyle}>{unit}</span>}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <button
+            onClick={() => onChange(parseFloat((value + step).toFixed(decimals ?? 2)))}
+            style={stepButtonStyle}
+          >
+            +
+          </button>
+          <button
+            onClick={() => {
+              const next = value - step;
+              onChange(parseFloat((min !== undefined ? Math.max(min, next) : next).toFixed(decimals ?? 2)));
+            }}
+            style={stepButtonStyle}
+          >
+            −
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function stepBtn(top: boolean): React.CSSProperties {
-  return {
-    all: 'unset', cursor: 'pointer',
-    width: 28, height: 22,
-    display: 'grid', placeItems: 'center',
-    color: T.textDim, fontSize: 14, fontWeight: 700,
-    borderBottom: top ? `1px solid ${T.border}` : 'none',
-  };
-}
+/* ============================================================
+ * Styles
+ * ============================================================ */
+
+const pageStyle = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column' as const,
+  background: T.bg,
+  minHeight: '100vh',
+};
+
+const topbarStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  padding: '14px 24px',
+  borderBottom: `1px solid ${T.border}`,
+  background: T.bg,
+  gap: 12,
+};
+
+const backButtonStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '8px 14px',
+  background: 'transparent',
+  border: 'none',
+  color: T.textDim,
+  borderRadius: 8,
+  cursor: 'pointer',
+  fontSize: 13,
+  fontWeight: 500,
+  fontFamily: 'inherit',
+};
+
+const mainGridStyle = {
+  flex: 1,
+  display: 'grid',
+  gridTemplateColumns: '1fr 320px 360px',
+  gap: 16,
+  padding: 16,
+  minHeight: 0,
+};
+
+const leftColStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: 16,
+  minWidth: 0,
+};
+
+const chartWrapStyle = {
+  position: 'relative' as const,
+  background: T.panel,
+  border: `1px solid ${T.border}`,
+  borderRadius: 14,
+  height: 480,
+  overflow: 'hidden' as const,
+  padding: 12,
+};
+
+const controlsColStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: 12,
+  padding: 20,
+  background: T.panel,
+  border: `1px solid ${T.border}`,
+  borderRadius: 14,
+  height: 'fit-content',
+  position: 'sticky' as const,
+  top: 16,
+};
+
+const reportColStyle = {
+  position: 'sticky' as const,
+  top: 16,
+  height: 'fit-content',
+};
+
+const panelTitleStyle = {
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: '0.12em',
+  color: T.textMute,
+  paddingBottom: 12,
+  borderBottom: `1px solid ${T.border}`,
+  marginBottom: 4,
+};
+
+const fieldGroupStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: 6,
+};
+
+const labelStyle = {
+  fontSize: 11,
+  color: T.textDim,
+  fontWeight: 500,
+};
+
+const profileButtonsStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(3, 1fr)',
+  gap: 6,
+};
+
+const profileButtonStyle = {
+  padding: '8px 6px',
+  background: T.bgElev,
+  border: `1px solid ${T.border}`,
+  color: T.textDim,
+  borderRadius: 8,
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  transition: 'all 120ms',
+};
+
+const profileButtonActiveStyle = {
+  background: T.accent,
+  color: T.bg,
+  borderColor: T.accent,
+  boxShadow: `0 0 12px ${T.accentDim}`,
+};
+
+const tpModeButtonStyle = {
+  flex: 1,
+  padding: '6px',
+  background: T.bgElev,
+  border: `1px solid ${T.border}`,
+  color: T.textDim,
+  borderRadius: 6,
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '0.06em',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  transition: 'all 120ms',
+};
+
+const tpModeButtonActiveStyle = {
+  background: T.accent,
+  color: T.bg,
+  borderColor: T.accent,
+};
+
+const numberInputWrapStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '8px 10px',
+  background: T.bgElev,
+  border: `1px solid ${T.border}`,
+  borderRadius: 8,
+};
+
+const numberInputStyle = {
+  flex: 1,
+  background: 'transparent',
+  border: 'none',
+  outline: 'none',
+  color: T.text,
+  fontSize: 14,
+  fontWeight: 600,
+  fontFamily: 'JetBrains Mono, monospace',
+  width: '100%',
+};
+
+const unitStyle = {
+  fontSize: 12,
+  color: T.textMute,
+  fontFamily: 'JetBrains Mono, monospace',
+};
+
+const stepButtonStyle = {
+  width: 18,
+  height: 14,
+  background: T.panel,
+  border: `1px solid ${T.border}`,
+  color: T.textDim,
+  borderRadius: 4,
+  fontSize: 11,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  display: 'grid',
+  placeItems: 'center',
+  padding: 0,
+};
+
+const hintStyle = {
+  fontSize: 10,
+  color: T.accent,
+  marginTop: 4,
+  opacity: 0.85,
+};
+
+const primaryButtonStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  padding: '12px 16px',
+  background: T.accent,
+  border: 'none',
+  color: T.bg,
+  borderRadius: 10,
+  fontSize: 12,
+  fontWeight: 700,
+  letterSpacing: '0.04em',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  marginTop: 12,
+  boxShadow: `0 0 24px ${T.accentDim}`,
+  transition: 'all 120ms',
+};
+
+const dangerButtonStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  padding: '12px 16px',
+  background: T.short,
+  border: 'none',
+  color: T.text,
+  borderRadius: 10,
+  fontSize: 12,
+  fontWeight: 700,
+  letterSpacing: '0.04em',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  marginTop: 12,
+};
+
+const dropdownStyle = {
+  position: 'absolute' as const,
+  top: 'calc(100% + 4px)',
+  left: 0,
+  minWidth: 220,
+  maxHeight: 320,
+  overflowY: 'auto' as const,
+  background: T.panel,
+  border: `1px solid ${T.borderHi}`,
+  borderRadius: 10,
+  padding: 4,
+  zIndex: 50,
+  boxShadow: `0 8px 24px ${T.bg}AA`,
+};
+
+const dropdownItemStyle = {
+  width: '100%',
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  padding: '8px 12px',
+  border: 'none',
+  borderRadius: 6,
+  fontSize: 12,
+  fontFamily: 'inherit',
+  textAlign: 'left' as const,
+};
