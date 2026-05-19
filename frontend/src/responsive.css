@@ -1,0 +1,93 @@
+/* ============================================================================
+ * Responsive patches — Auraa.bot
+ * ----------------------------------------------------------------------------
+ * Importado no main.tsx. Aplica ajustes globais para mobile/tablet sem
+ * precisar mexer em cada componente individualmente.
+ * ========================================================================== */
+
+/* ─── Reservar espaço para o bottom nav em mobile ─── */
+@media (max-width: 768px) {
+  main {
+    padding-bottom: 80px !important;
+  }
+}
+
+/* ─── BotScreen: empilhamento no mobile ─── */
+@media (max-width: 1280px) {
+  .bot-main-grid {
+    grid-template-columns: 1fr 320px !important;
+  }
+  .bot-report-col {
+    grid-column: 1 / -1 !important;
+    position: static !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .bot-main-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+    padding: 12px !important;
+  }
+  .bot-controls-col,
+  .bot-report-col {
+    position: static !important;
+    grid-column: 1 !important;
+  }
+}
+
+/* ─── BotScreen header (topbar): wrap em mobile ─── */
+@media (max-width: 768px) {
+  header {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    padding: 10px 12px !important;
+  }
+}
+
+/* ─── PainelPage: padding menor no mobile ─── */
+@media (max-width: 768px) {
+  body, .auraa-page {
+    font-size: 14px;
+  }
+}
+
+/* ─── Headings: reduzir um pouco no mobile ─── */
+@media (max-width: 768px) {
+  h1 { font-size: 22px !important; }
+  h2 { font-size: 18px !important; }
+}
+
+/* ─── Tabelas/grids genéricos com auto-fit: garantir min mais baixo ─── */
+@media (max-width: 480px) {
+  [class*="grid"] {
+    gap: 12px !important;
+  }
+}
+
+/* ─── Chart: altura menor no mobile ─── */
+@media (max-width: 768px) {
+  .auraa-chart-wrap,
+  .chart-wrap {
+    height: 360px !important;
+  }
+}
+
+/* ─── OperationsLog: rolagem horizontal em telas estreitas ─── */
+@media (max-width: 600px) {
+  .operations-row {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+}
+
+/* ─── Body sem margem (sanity check) ─── */
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
