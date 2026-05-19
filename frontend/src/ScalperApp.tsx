@@ -36,6 +36,11 @@ export function ScalperApp() {
         ::-webkit-scrollbar-track { background: ${T.bgElev}; }
         ::-webkit-scrollbar-thumb { background: ${T.border}; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: ${T.borderHi}; }
+
+        /* Mobile: reserva espaço para o bottom nav */
+        @media (max-width: 768px) {
+          .auraa-main { padding-bottom: 80px !important; }
+        }
       `}</style>
 
       <Sidebar
@@ -44,7 +49,7 @@ export function ScalperApp() {
         onLogout={logout}
       />
 
-      <main style={mainStyle}>
+      <main style={mainStyle} className="auraa-main">
         {active === 'painel' && (
           <PainelPage
             user={state.user}
