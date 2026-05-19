@@ -32,13 +32,11 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Captura erros vindos do callback via ?error=
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const err = params.get('error');
     if (err) {
       setError(ERROR_LABELS[err] ?? 'Não foi possível autenticar. Tente novamente.');
-      // limpa a URL
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
@@ -57,29 +55,11 @@ export function LoginPage() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        background: T.bg,
-        color: T.text,
-        fontFamily: '"Inter", "SF Pro Text", -apple-system, sans-serif',
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-      }}
-    >
+    <div className="login-grid">
       <style>{globalCSS}</style>
 
       {/* COLUNA ESQUERDA — Marca + benefícios */}
-      <aside
-        style={{
-          padding: '48px 56px',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'space-between',
-          background: `radial-gradient(ellipse at top left, ${T.accent}0F, transparent 60%), ${T.bg}`,
-          borderRight: `1px solid ${T.border}`,
-        }}
-      >
+      <aside className="login-aside">
         {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div
@@ -94,7 +74,7 @@ export function LoginPage() {
           </div>
           <div>
             <div style={{ fontWeight: 700, letterSpacing: '-0.02em', fontSize: 18 }}>
-              SCALPER<span style={{ color: T.accent }}>.AI</span>
+              AURA <span style={{ color: T.accent }}>BOT</span>
             </div>
             <div style={{ fontSize: 11, color: T.textMute, letterSpacing: '0.08em' }}>
               AUTOMATED TRADING SYSTEM
@@ -114,7 +94,7 @@ export function LoginPage() {
           </div>
           <h1
             style={{
-              fontSize: 'clamp(32px, 3.5vw, 48px)',
+              fontSize: 'clamp(28px, 3.5vw, 48px)',
               fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1.05,
               margin: 0, maxWidth: 480,
             }}
@@ -145,27 +125,8 @@ export function LoginPage() {
       </aside>
 
       {/* COLUNA DIREITA — Card de login */}
-      <main
-        style={{
-          display: 'grid',
-          placeItems: 'center',
-          padding: '40px',
-          background: T.bgElev,
-        }}
-      >
-        <div
-          style={{
-            width: '100%',
-            maxWidth: 420,
-            background: T.panel,
-            border: `1px solid ${T.border}`,
-            borderRadius: 16,
-            padding: 36,
-            boxShadow: `0 20px 60px -20px ${T.accent}1A`,
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-        >
+      <main className="login-main">
+        <div className="login-card">
           {/* glow */}
           <div
             style={{
@@ -302,7 +263,61 @@ function Spinner() {
 
 const globalCSS = `
   * { box-sizing: border-box; }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Layout desktop ── */
+  .login-grid {
+    min-height: 100vh;
+    background: ${T.bg};
+    color: ${T.text};
+    font-family: "Inter", "SF Pro Text", -apple-system, sans-serif;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .login-aside {
+    padding: 48px 56px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: radial-gradient(ellipse at top left, ${T.accent}0F, transparent 60%), ${T.bg};
+    border-right: 1px solid ${T.border};
+    gap: 40px;
+  }
+  .login-main {
+    display: grid;
+    place-items: center;
+    padding: 40px;
+    background: ${T.bgElev};
+  }
+  .login-card {
+    width: 100%;
+    max-width: 420px;
+    background: ${T.panel};
+    border: 1px solid ${T.border};
+    border-radius: 16px;
+    padding: 36px;
+    box-shadow: 0 20px 60px -20px ${T.accent}1A;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ── Mobile (<768px): tudo em coluna única ── */
+  @media (max-width: 768px) {
+    .login-grid {
+      grid-template-columns: 1fr;
+    }
+    .login-aside {
+      padding: 28px 20px;
+      gap: 24px;
+      border-right: none;
+      border-bottom: 1px solid ${T.border};
+    }
+    .login-main {
+      padding: 20px;
+    }
+    .login-card {
+      padding: 24px;
+      box-shadow: none;
+    }
   }
 `;
