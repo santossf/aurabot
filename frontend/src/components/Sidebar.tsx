@@ -78,7 +78,7 @@ export function Sidebar({ active, onChange, marketOpen = true, onLogout }: Sideb
           </div>
           <div>
             <div style={logoTextStyle}>
-              AURAA<span style={{ color: T.accent }}>.BOT</span>
+              AURA <span style={{ color: T.accent }}>BOT</span>
             </div>
             <div style={logoSubStyle}>AUTOMATED TRADING</div>
           </div>
@@ -169,11 +169,7 @@ export function Sidebar({ active, onChange, marketOpen = true, onLogout }: Sideb
                 borderTop: isActive ? `2px solid ${T.accent}` : '2px solid transparent',
               }}
             >
-              <Icon
-                size={20}
-                color={isActive ? T.accent : T.textDim}
-                strokeWidth={2}
-              />
+              <Icon size={20} color={isActive ? T.accent : T.textDim} strokeWidth={2} />
               <span style={{
                 fontSize: 10,
                 fontWeight: isActive ? 700 : 400,
